@@ -177,41 +177,70 @@ __device__ void AddRoundKey(unsigned char *state, const unsigned char *roundKey)
     }
 }
 
-__global__ void aes_ctr_encrypt_kernel(unsigned char *input, unsigned char *output, unsigned char *expandedKey, unsigned char *iv, unsigned long long totalBlocks) {
-    
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+__device__ void aes_encrypt_block(unsigned char *input, unsigned char *output, unsigned char *expandedKey) {
+    unsigned char state[16];
 
-    // Process only if idx is within total number of blocks
-    if (idx < totalBlocks) {
-        unsigned char state[16];
-        unsigned long long int counter = idx; // Use idx as counter
+    // Copy the input to the state array
+    for (int i = 0; i < 16; ++i) {
+        state[i] = input[i];
+    }
 
-        // Copy IV to the state and apply the counter value
-        memcpy(state, iv, AES_BLOCK_SIZE); // Assuming the first 8 bytes of IV are constant for this example
-        for (int i = 0; i < 8; ++i) { // This part needs to handle the counter correctly; consider the entire 128-bit block
-            state[8 + i] = ((unsigned char*)&counter)[i];
-        }
+    // Add the round key to the state
+    AddRoundKey(state, expandedKey);
 
-        // Encrypt the counter block
-        for (int round = 0; round < 10; ++round) {
-            SubBytes(state);
-            ShiftRows(state);
-            if (round < 9) MixColumns(state);
-            AddRoundKey(state, expandedKey + round * AES_BLOCK_SIZE); // Ensure expandedKey is correctly prepared
-        }
+    // Perform 9 rounds of substitutions, shifts, mixes, and round key additions
+    for (int round = 1; round < 10; ++round) {
+        SubBytes(state);
+        ShiftRows(state);
+        MixColumns(state);
+        AddRoundKey(state, expandedKey + round * 16);
+    }
 
-        // XOR with plaintext to produce ciphertext
+    // Perform the final round (without MixColumns)
+    SubBytes(state);
+    ShiftRows(state);
+    AddRoundKey(state, expandedKey + 10 * 16);
+
+    // Copy the state to the output
+    for (int i = 0; i < 16; ++i) {
+        output[i] = state[i];
+    }
+}
+
+__global__ void aes_ctr_encrypt_kernel(unsigned char *plaintext, unsigned char *ciphertext, unsigned char *expandedKey, unsigned char *iv, int numBlocks) {
+    // Calculate the global thread ID
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+
+    // Check if the thread is within the number of blocks
+    if (tid < numBlocks) {
+        // Copy the IV to a local array
+        unsigned char localIv[AES_BLOCK_SIZE];
+        memcpy(localIv, iv, AES_BLOCK_SIZE);
+
+        // Increment the counter in the local IV
+        localIv[15] += tid;
+
+        // Print the local IV for debugging
+        printf("Thread %d local IV: ", tid);
         for (int i = 0; i < AES_BLOCK_SIZE; ++i) {
-            output[idx * AES_BLOCK_SIZE + i] = input[idx * AES_BLOCK_SIZE + i] ^ state[i];
+            printf("%02x", localIv[i]);
+        }
+        printf("\n");
+
+        // Perform the AES encryption
+        unsigned char block[AES_BLOCK_SIZE];
+        aes_encrypt_block(localIv, block, expandedKey);
+
+        // XOR the plaintext with the encrypted block
+        for (int i = 0; i < AES_BLOCK_SIZE; ++i) {
+            ciphertext[tid * AES_BLOCK_SIZE + i] = plaintext[tid * AES_BLOCK_SIZE + i] ^ block[i];
         }
     }
 }
 
 int main() {
     unsigned char *d_plaintext, *d_ciphertext, *d_iv;
-    unsigned long long int *d_nonceCounter; // Device pointer for nonce counter
     unsigned char *d_expandedKey;
-    unsigned long long int nonceCounterValue = 0; 
     size_t dataSize = 16; // set the actual data size;
 
     // Copy S-box and rcon to device constant memory
@@ -226,38 +255,35 @@ int main() {
     size_t numBlocks = (dataSize + AES_BLOCK_SIZE - 1) / AES_BLOCK_SIZE;
 
     // Define the size of the grid and the blocks
-    dim3 threadsPerBlock(AES_BLOCK_SIZE, AES_BLOCK_SIZE, 1);
-    dim3 blocksPerGrid((numBlocks + threadsPerBlock.x - 1) / threadsPerBlock.x,
-                    (numBlocks + threadsPerBlock.y - 1) / threadsPerBlock.y,
-                    (numBlocks + threadsPerBlock.z - 1) / threadsPerBlock.z);
+    dim3 threadsPerBlock(256); // Use a reasonable number of threads per block
+    dim3 blocksPerGrid((numBlocks + threadsPerBlock.x - 1) / threadsPerBlock.x);
 
-   // Allocate device memory
-    cudaMalloc((void **)&d_plaintext, AES_BLOCK_SIZE * sizeof(unsigned char));
-    cudaMalloc((void **)&d_ciphertext, AES_BLOCK_SIZE * sizeof(unsigned char));
-    cudaMalloc((void **)&d_nonceCounter, sizeof(unsigned long long int));
+    // Allocate device memory
+    cudaMalloc((void **)&d_plaintext, dataSize * sizeof(unsigned char));
+    cudaMalloc((void **)&d_ciphertext, dataSize * sizeof(unsigned char));
     cudaMalloc((void **)&d_iv, AES_BLOCK_SIZE * sizeof(unsigned char));
-    cudaMalloc((void **)&d_expandedKey, 176); // Expanded key size for AES-128
+    cudaMalloc((void **)&d_expandedKey, 176); 
 
     // Copy host memory to device
-    cudaMemcpy(d_plaintext, plaintext, AES_BLOCK_SIZE * sizeof(unsigned char), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_nonceCounter, &nonceCounterValue, sizeof(unsigned long long int), cudaMemcpyHostToDevice); 
+    cudaMemcpy(d_plaintext, plaintext, dataSize * sizeof(unsigned char), cudaMemcpyHostToDevice);
     cudaMemcpy(d_iv, iv, AES_BLOCK_SIZE * sizeof(unsigned char), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_expandedKey, expandedKey, 176, cudaMemcpyHostToDevice); // Copy expanded key
+    cudaMemcpy(d_expandedKey, expandedKey, 176, cudaMemcpyHostToDevice); 
 
     // Launch AES-CTR encryption kernel
-    aes_ctr_encrypt_kernel<<<blocksPerGrid, threadsPerBlock>>>(d_plaintext, d_ciphertext, d_expandedKey, d_iv, nonceCounterValue);
+    aes_ctr_encrypt_kernel<<<blocksPerGrid, threadsPerBlock>>>(d_plaintext, d_ciphertext, d_expandedKey, d_iv, numBlocks);
 
     // Copy device ciphertext back to host
-    unsigned char ciphertext[AES_BLOCK_SIZE];
-    cudaMemcpy(ciphertext, d_ciphertext, AES_BLOCK_SIZE * sizeof(unsigned char), cudaMemcpyDeviceToHost);
+    unsigned char *ciphertext = new unsigned char[dataSize];
+    cudaMemcpy(ciphertext, d_ciphertext, dataSize * sizeof(unsigned char), cudaMemcpyDeviceToHost);
 
     // Output encoded text
-    print_hex(ciphertext, AES_BLOCK_SIZE);
+    print_hex(ciphertext, dataSize);
 
     // Cleanup
     cudaFree(d_plaintext);
     cudaFree(d_ciphertext);
-    cudaFree(d_nonceCounter);
     cudaFree(d_iv);
+    cudaFree(d_expandedKey);
+    delete[] ciphertext;
     return 0;
 }
