@@ -58,7 +58,9 @@ unsigned char h_sbox[256] = {
 };
 
 unsigned char h_rcon[11] = {
-    0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1B, 0x36
+    0x00, // not used
+    0x01, 0x02, 0x04, 0x08, 0x10, 
+    0x20, 0x40, 0x80, 0x1B, 0x36
 };
 
 __constant__ unsigned char d_sbox[256];
@@ -208,10 +210,9 @@ __global__ void aes_ctr_encrypt_kernel(unsigned char *input, unsigned char *outp
 int main() {
     unsigned char *d_plaintext, *d_ciphertext, *d_iv;
     unsigned long long int *d_nonceCounter; // Device pointer for nonce counter
+    unsigned char *d_expandedKey;
     unsigned long long int nonceCounterValue = 0; 
     size_t dataSize = 16; // set the actual data size;
-    unsigned char *d_expandedKey;
-
 
     // Copy S-box and rcon to device constant memory
     cudaMemcpyToSymbol(d_sbox, h_sbox, sizeof(h_sbox));
@@ -229,9 +230,6 @@ int main() {
     dim3 blocksPerGrid((numBlocks + threadsPerBlock.x - 1) / threadsPerBlock.x,
                     (numBlocks + threadsPerBlock.y - 1) / threadsPerBlock.y,
                     (numBlocks + threadsPerBlock.z - 1) / threadsPerBlock.z);
-
-    //dim3 threadsPerBlock(1, 1, 1);
-    //dim3 blocksPerGrid(1, 1, 1);
 
    // Allocate device memory
     cudaMalloc((void **)&d_plaintext, AES_BLOCK_SIZE * sizeof(unsigned char));
@@ -253,6 +251,7 @@ int main() {
     unsigned char ciphertext[AES_BLOCK_SIZE];
     cudaMemcpy(ciphertext, d_ciphertext, AES_BLOCK_SIZE * sizeof(unsigned char), cudaMemcpyDeviceToHost);
 
+    // Output encoded text
     print_hex(ciphertext, AES_BLOCK_SIZE);
 
     // Cleanup
