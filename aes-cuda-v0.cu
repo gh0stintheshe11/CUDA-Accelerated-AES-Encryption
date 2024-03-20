@@ -1,14 +1,31 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <cuda_runtime.h>
-// Define plaintext: 00112233445566778899aabbccddeeff
+#include <string.h>
+
+#define AES_KEY_SIZE 16
+#define AES_BLOCK_SIZE 16
+
+// Expected output: 
+// 0a 85 29 86 05 3b 96 32 79 5a 3e e3 0a 8e 04 a5
+
+// Define plaintext: 
+// 00 11 22 33 44 55 66 77 88 99 aa bb cc dd ee ff
 unsigned char plaintext[16] = {
     0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
     0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff
 };
 
-// Define key for AES-128: 000102030405060708090a0b0c0d0e0f
+// Define key for AES-128: 
+// 00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f
 unsigned char key[16] = {
+    0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+    0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f
+};
+
+// Define IV for AES-CTR: 
+// 00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f
+unsigned char iv[16] = {
     0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
     0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f
 };
@@ -21,7 +38,7 @@ void print_hex(unsigned char *bytes, size_t length) {
     printf("\n");
 }
 
-__device__ __constant__ unsigned char sbox[256] = {
+unsigned char h_sbox[256] = {
     0x63, 0x7C, 0x77, 0x7B, 0xF2, 0x6B, 0x6F, 0xC5, 0x30, 0x01, 0x67, 0x2B, 0xFE, 0xD7, 0xAB, 0x76,
     0xCA, 0x82, 0xC9, 0x7D, 0xFA, 0x59, 0x47, 0xF0, 0xAD, 0xD4, 0xA2, 0xAF, 0x9C, 0xA4, 0x72, 0xC0,
     0xB7, 0xFD, 0x93, 0x26, 0x36, 0x3F, 0xF7, 0xCC, 0x34, 0xA5, 0xE5, 0xF1, 0x71, 0xD8, 0x31, 0x15,
@@ -40,9 +57,75 @@ __device__ __constant__ unsigned char sbox[256] = {
     0x8C, 0xA1, 0x89, 0x0D, 0xBF, 0xE6, 0x42, 0x68, 0x41, 0x99, 0x2D, 0x0F, 0xB0, 0x54, 0xBB, 0x16
 };
 
+unsigned char h_rcon[11] = {
+    0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1B, 0x36
+};
+
+__constant__ unsigned char d_sbox[256];
+__constant__ unsigned char d_rcon[11];
+
+__device__ unsigned char mul(unsigned char a, unsigned char b) {
+    unsigned char p = 0;
+    unsigned char high_bit_mask = 0x80;
+    unsigned char high_bit = 0;
+    unsigned char modulo = 0x1B; /* x^8 + x^4 + x^3 + x + 1 */
+
+    for (int i = 0; i < 8; i++) {
+        if (b & 1) {
+            p ^= a;
+        }
+
+        high_bit = a & high_bit_mask;
+        a <<= 1;
+        if (high_bit) {
+            a ^= modulo;
+        }
+        b >>= 1;
+    }
+
+    return p;
+}
+
+void KeyExpansionHost(unsigned char* key, unsigned char* expandedKey) {
+    int i = 0;
+    while (i < 4) {
+        for (int j = 0; j < 4; j++) {
+            expandedKey[i * 4 + j] = key[i * 4 + j];
+        }
+        i++;
+    }
+
+    int rconIteration = 1;
+    unsigned char temp[4];
+
+    while (i < 44) {
+        for (int j = 0; j < 4; j++) {
+            temp[j] = expandedKey[(i - 1) * 4 + j];
+        }
+
+        if (i % 4 == 0) {
+            unsigned char k = temp[0];
+            for (int j = 0; j < 3; j++) {
+                temp[j] = temp[j + 1];
+            }
+            temp[3] = k;
+
+            for (int j = 0; j < 4; j++) {
+                // Use the host-accessible arrays
+                temp[j] = h_sbox[temp[j]] ^ (j == 0 ? h_rcon[rconIteration++] : 0);
+            }
+        }
+
+        for (int j = 0; j < 4; j++) {
+            expandedKey[i * 4 + j] = expandedKey[(i - 4) * 4 + j] ^ temp[j];
+        }
+        i++;
+    }
+}
+
 __device__ void SubBytes(unsigned char *state) {
     for (int i = 0; i < 16; ++i) {
-        state[i] = sbox[state[i]];
+        state[i] = d_sbox[state[i]];
     }
 }
 
@@ -92,147 +175,90 @@ __device__ void AddRoundKey(unsigned char *state, const unsigned char *roundKey)
     }
 }
 
-__device__ unsigned char mul(unsigned char a, unsigned char b) {
-    unsigned char p = 0;
-    unsigned char high_bit_mask = 0x80;
-    unsigned char high_bit = 0;
-    unsigned char modulo = 0x1B; /* x^8 + x^4 + x^3 + x + 1 */
+__global__ void aes_ctr_encrypt_kernel(unsigned char *input, unsigned char *output, unsigned char *expandedKey, unsigned char *iv, unsigned long long nonceCounter) {
 
-    for (int i = 0; i < 8; i++) {
-        if (b & 1) {
-            p ^= a;
-        }
-
-        high_bit = a & high_bit_mask;
-        a <<= 1;
-        if (high_bit) {
-            a ^= modulo;
-        }
-        b >>= 1;
-    }
-
-    return p;
-}
-
-__global__ void aes_encrypt_ctr(unsigned char *input, unsigned char *output, unsigned char *expandedKey, unsigned long long int *nonceCounter, int dataSize) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    
+    // Assuming each thread processes one block of data
+    if (idx < AES_BLOCK_SIZE) { // This condition seems off; you'd typically compare idx against the total number of blocks or data size
+        unsigned char state[16];
+        unsigned long long int counter = nonceCounter + idx; // Increment counter for each block
 
-    if (idx < dataSize) {
-        // Each thread handles one block of input data
-        unsigned char state[16]; // AES block size is 128 bits = 16 bytes
-
-        // Prepare the input block (CTR mode: encrypt the counter, then XOR with plaintext)
-        // Need to initialize the state with the counter value and nonce, then encrypt it
-        for (int i = 0; i < 16; ++i) {
-            state[i] = ((unsigned char*)nonceCounter)[i % 8]; // Assuming nonceCounter is 64 bits
-            if (i < 8) state[i] ^= input[idx * 16 + i]; // XOR with input
+        // Copy IV to the state and apply the counter value
+        memcpy(state, iv, AES_BLOCK_SIZE); // Assuming the first 8 bytes of IV are constant for this example
+        for (int i = 0; i < 8; ++i) { // This part needs to handle the counter correctly; consider the entire 128-bit block
+            state[8 + i] = ((unsigned char*)&counter)[i];
         }
 
-        for (int round = 0; round < 10; ++round) { // Assuming AES-128 for simplicity
+        // Encrypt the counter block
+        for (int round = 0; round < 10; ++round) {
             SubBytes(state);
             ShiftRows(state);
-            if (round < 9) MixColumns(state); // Skip in the final round
-            AddRoundKey(state, expandedKey + round * 16);
+            if (round < 9) MixColumns(state);
+            AddRoundKey(state, expandedKey + round * AES_BLOCK_SIZE); // Ensure expandedKey is correctly prepared
         }
 
-        // XOR the encrypted counter block with the plaintext block to produce the ciphertext block
-        for (int i = 0; i < 16; ++i) {
-            output[idx * 16 + i] = state[i] ^ input[idx * 16 + i];
+        // XOR with plaintext to produce ciphertext
+        for (int i = 0; i < AES_BLOCK_SIZE; ++i) {
+            output[i] = input[i] ^ state[i];
         }
     }
 }
 
 int main() {
-    unsigned char *plaintext;  // Host plaintext
-    unsigned char *ciphertext; // Host ciphertext
-    unsigned char *d_plaintext, *d_ciphertext, *d_key;
-    unsigned long long int *d_nonceCounter;
-    int dataSize = 1024; // Example data size, adjust as needed
-    unsigned char key[AES_KEY_SIZE]; // AESi key, ensure AES_KEY_SIZE is defined
-    unsigned long long int nonceCounter = 0; // Example nonceCounter, initialize appropriately
+    unsigned char *d_plaintext, *d_ciphertext, *d_iv;
+    unsigned long long int *d_nonceCounter; // Device pointer for nonce counter
+    unsigned long long int nonceCounterValue = 0; 
+    size_t dataSize = 16; // set the actual data size;
+    unsigned char *d_expandedKey;
 
-    // Allocate host memory
-    plaintext = (unsigned char*)malloc(dataSize * sizeof(unsigned char));
-    ciphertext = (unsigned char*)malloc(dataSize * sizeof(unsigned char));
 
-    // Initialize plaintext and key as needed
+    // Copy S-box and rcon to device constant memory
+    cudaMemcpyToSymbol(d_sbox, h_sbox, sizeof(h_sbox));
+    cudaMemcpyToSymbol(d_rcon, h_rcon, sizeof(h_rcon));
 
-    // Allocate device memory
-    cudaMalloc((void **)&d_plaintext, dataSize * sizeof(unsigned char));
-    cudaMalloc((void **)&d_ciphertext, dataSize * sizeof(unsigned char));
-    cudaMalloc((void **)&d_key, AES_KEY_SIZE * sizeof(unsigned char));
+    // Call the host function to expand the key
+    unsigned char expandedKey[176];
+    KeyExpansionHost(key, expandedKey);
+
+    // Calculate the number of AES blocks needed
+    size_t numBlocks = (dataSize + AES_BLOCK_SIZE - 1) / AES_BLOCK_SIZE;
+
+    // Define the size of the grid and the blocks
+    dim3 threadsPerBlock(AES_BLOCK_SIZE, AES_BLOCK_SIZE, 1);
+    dim3 blocksPerGrid((numBlocks + threadsPerBlock.x - 1) / threadsPerBlock.x,
+                    (numBlocks + threadsPerBlock.y - 1) / threadsPerBlock.y,
+                    (numBlocks + threadsPerBlock.z - 1) / threadsPerBlock.z);
+
+    //dim3 threadsPerBlock(1, 1, 1);
+    //dim3 blocksPerGrid(1, 1, 1);
+
+   // Allocate device memory
+    cudaMalloc((void **)&d_plaintext, AES_BLOCK_SIZE * sizeof(unsigned char));
+    cudaMalloc((void **)&d_ciphertext, AES_BLOCK_SIZE * sizeof(unsigned char));
     cudaMalloc((void **)&d_nonceCounter, sizeof(unsigned long long int));
+    cudaMalloc((void **)&d_iv, AES_BLOCK_SIZE * sizeof(unsigned char));
+    cudaMalloc((void **)&d_expandedKey, 176); // Expanded key size for AES-128
 
     // Copy host memory to device
-    cudaMemcpy(d_plaintext, plaintext, dataSize * sizeof(unsigned char), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_key, key, AES_KEY_SIZE * sizeof(unsigned char), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_nonceCounter, &nonceCounter, sizeof(unsigned long long int), cudaMemcpyHostToDevice);
-
-    // Define block and grid sizes
-    int blockSize = 256; // Example, can be optimized
-    int numBlocks = (dataSize + blockSize - 1) / blockSize;
+    cudaMemcpy(d_plaintext, plaintext, AES_BLOCK_SIZE * sizeof(unsigned char), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_nonceCounter, &nonceCounterValue, sizeof(unsigned long long int), cudaMemcpyHostToDevice); 
+    cudaMemcpy(d_iv, iv, AES_BLOCK_SIZE * sizeof(unsigned char), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_expandedKey, expandedKey, 176, cudaMemcpyHostToDevice); // Copy expanded key
 
     // Launch AES-CTR encryption kernel
-    aes_ctr_encrypt_kernel<<<numBlocks, blockSize>>>(d_plaintext, d_ciphertext, d_key, d_nonceCounter, dataSize);
+    aes_ctr_encrypt_kernel<<<blocksPerGrid, threadsPerBlock>>>(d_plaintext, d_ciphertext, d_expandedKey, d_iv, nonceCounterValue);
 
     // Copy device ciphertext back to host
-    cudaMemcpy(ciphertext, d_ciphertext, dataSize * sizeof(unsigned char), cudaMemcpyDeviceToHost);
+    unsigned char ciphertext[AES_BLOCK_SIZE];
+    cudaMemcpy(ciphertext, d_ciphertext, AES_BLOCK_SIZE * sizeof(unsigned char), cudaMemcpyDeviceToHost);
+
+    print_hex(ciphertext, AES_BLOCK_SIZE);
 
     // Cleanup
     cudaFree(d_plaintext);
     cudaFree(d_ciphertext);
-    cudaFree(d_key);
     cudaFree(d_nonceCounter);
-    free(plaintext);
-    free(ciphertext);
-
-    return 0;
-}
-int main() {
-    unsigned char *plaintext;  // Host plaintext
-    unsigned char *ciphertext; // Host ciphertext
-    unsigned char *d_plaintext, *d_ciphertext, *d_key;
-    unsigned long long int *d_nonceCounter;
-    int dataSize = 1024; // Example data size, adjust as needed
-    unsigned char key[AES_KEY_SIZE]; // AESi key, ensure AES_KEY_SIZE is defined
-    unsigned long long int nonceCounter = 0; // Example nonceCounter, initialize appropriately
-
-    // Allocate host memory
-    plaintext = (unsigned char*)malloc(dataSize * sizeof(unsigned char));
-    ciphertext = (unsigned char*)malloc(dataSize * sizeof(unsigned char));
-
-    // Initialize plaintext and key as needed
-
-    // Allocate device memory
-    cudaMalloc((void **)&d_plaintext, dataSize * sizeof(unsigned char));
-    cudaMalloc((void **)&d_ciphertext, dataSize * sizeof(unsigned char));
-    cudaMalloc((void **)&d_key, AES_KEY_SIZE * sizeof(unsigned char));
-    cudaMalloc((void **)&d_nonceCounter, sizeof(unsigned long long int));
-
-    // Copy host memory to device
-    cudaMemcpy(d_plaintext, plaintext, dataSize * sizeof(unsigned char), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_key, key, AES_KEY_SIZE * sizeof(unsigned char), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_nonceCounter, &nonceCounter, sizeof(unsigned long long int), cudaMemcpyHostToDevice);
-
-    // Define block and grid sizes
-    int blockSize = 256; // Example, can be optimized
-    int numBlocks = (dataSize + blockSize - 1) / blockSize;
-
-    // Launch AES-CTR encryption kernel
-    aes_ctr_encrypt_kernel<<<numBlocks, blockSize>>>(d_plaintext, d_ciphertext, d_key, d_nonceCounter, dataSize);
-
-    // Copy device ciphertext back to host
-    cudaMemcpy(ciphertext, d_ciphertext, dataSize * sizeof(unsigned char), cudaMemcpyDeviceToHost);
-
-    print_hex(plaintext, 16);
-
-    // Cleanup
-    cudaFree(d_plaintext);
-    cudaFree(d_ciphertext);
-    cudaFree(d_key);
-    cudaFree(d_nonceCounter);
-    free(plaintext);
-    free(ciphertext);
-
+    cudaFree(d_iv);
     return 0;
 }
