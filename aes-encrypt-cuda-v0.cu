@@ -6,36 +6,56 @@
 #define AES_KEY_SIZE 16
 #define AES_BLOCK_SIZE 16
 
-// Expected output: 
-// 0a 85 29 86 05 3b 96 32 79 5a 3e e3 0a 8e 04 a5
-
-// Define plaintext: 
-// 00 11 22 33 44 55 66 77 88 99 aa bb cc dd ee ff
-unsigned char plaintext[16] = {
-    0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
-    0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff
-};
-
-// Define key for AES-128: 
-// 00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f
-unsigned char key[16] = {
-    0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
-    0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f
-};
-
-// Define IV for AES-CTR: 
-// 00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f
-unsigned char iv[16] = {
-    0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
-    0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f
-};
-
 // Print bytes in hexadecimal format
 void print_hex(unsigned char *bytes, size_t length) {
     for (size_t i = 0; i < length; ++i) {
         printf("%02x", bytes[i]);
     }
     printf("\n");
+}
+
+// Function to read key or IV from a file
+void read_key_or_iv(unsigned char *data, size_t size, const char *filename) {
+    FILE *file = fopen(filename, "r");
+    if (file == NULL) {
+        fprintf(stderr, "Cannot open file: %s\n", filename);
+        exit(1);
+    }
+    for (size_t i = 0; i < size; i++) {
+        char buffer[3];
+        if (fread(buffer, 1, 2, file) != 2) {
+            fprintf(stderr, "Cannot read value from file: %s\n", filename);
+            exit(1);
+        }
+        buffer[2] = '\0'; // Null-terminate the buffer
+        data[i] = (unsigned char)strtol(buffer, NULL, 16); // Convert the buffer to a hexadecimal value
+    }
+    fclose(file);
+}
+
+// Function to read plaintext from a file
+void read_plaintext(unsigned char *plaintext, size_t size, const char *filename) {
+    FILE *file = fopen(filename, "r");
+    if (file == NULL) {
+        fprintf(stderr, "Cannot open file: %s\n", filename);
+        exit(1);
+    }
+    fgets((char *)plaintext, size, file);
+    fclose(file);
+}
+
+// Function to write ciphertext to a file
+void write_ciphertext(const unsigned char *ciphertext, size_t size, const char *filename) {
+    FILE *file = fopen(filename, "w");
+    if (file == NULL) {
+        fprintf(stderr, "Cannot open file: %s\n", filename);
+        exit(1);
+    }
+    for (size_t i = 0; i < size; i++) {
+        fprintf(file, "%02x", ciphertext[i]);
+    }
+    fprintf(file, "\n"); 
+    fclose(file);
 }
 
 unsigned char h_sbox[256] = {
@@ -220,13 +240,6 @@ __global__ void aes_ctr_encrypt_kernel(unsigned char *plaintext, unsigned char *
         // Increment the counter in the local IV
         localIv[15] += tid;
 
-        // Print the local IV for debugging
-        printf("Thread %d local IV: ", tid);
-        for (int i = 0; i < AES_BLOCK_SIZE; ++i) {
-            printf("%02x", localIv[i]);
-        }
-        printf("\n");
-
         // Perform the AES encryption
         unsigned char block[AES_BLOCK_SIZE];
         aes_encrypt_block(localIv, block, expandedKey);
@@ -239,9 +252,20 @@ __global__ void aes_ctr_encrypt_kernel(unsigned char *plaintext, unsigned char *
 }
 
 int main() {
+
+    // Read the key and IV
+    unsigned char key[16];
+    unsigned char iv[16];
+    read_key_or_iv(key, sizeof(key), "key.txt");
+    read_key_or_iv(iv, sizeof(iv), "iv.txt");
+
+    // Read the plaintext from a file
+    unsigned char plaintext[1024]; // Buffer to hold the plaintext
+    read_plaintext(plaintext, sizeof(plaintext), "plaintext.txt"); 
+    size_t dataSize = strlen((char *)plaintext); // Get the size of the plaintext
+
     unsigned char *d_plaintext, *d_ciphertext, *d_iv;
     unsigned char *d_expandedKey;
-    size_t dataSize = 16; // set the actual data size;
 
     // Copy S-box and rcon to device constant memory
     cudaMemcpyToSymbol(d_sbox, h_sbox, sizeof(h_sbox));
@@ -258,16 +282,22 @@ int main() {
     dim3 threadsPerBlock(256); // Use a reasonable number of threads per block
     dim3 blocksPerGrid((numBlocks + threadsPerBlock.x - 1) / threadsPerBlock.x);
 
+    // Pad the plaintext with zeros
+    unsigned char *paddedPlaintext = new unsigned char[numBlocks * AES_BLOCK_SIZE];
+    memcpy(paddedPlaintext, plaintext, dataSize);
+    memset(paddedPlaintext + dataSize, 0, numBlocks * AES_BLOCK_SIZE - dataSize);
+
     // Allocate device memory
-    cudaMalloc((void **)&d_plaintext, dataSize * sizeof(unsigned char));
-    cudaMalloc((void **)&d_ciphertext, dataSize * sizeof(unsigned char));
     cudaMalloc((void **)&d_iv, AES_BLOCK_SIZE * sizeof(unsigned char));
     cudaMalloc((void **)&d_expandedKey, 176); 
+    cudaMalloc((void **)&d_plaintext, numBlocks * AES_BLOCK_SIZE * sizeof(unsigned char));
+    cudaMalloc((void **)&d_ciphertext, numBlocks * AES_BLOCK_SIZE * sizeof(unsigned char));
 
     // Copy host memory to device
-    cudaMemcpy(d_plaintext, plaintext, dataSize * sizeof(unsigned char), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_plaintext, paddedPlaintext, numBlocks * AES_BLOCK_SIZE * sizeof(unsigned char), cudaMemcpyHostToDevice);
     cudaMemcpy(d_iv, iv, AES_BLOCK_SIZE * sizeof(unsigned char), cudaMemcpyHostToDevice);
     cudaMemcpy(d_expandedKey, expandedKey, 176, cudaMemcpyHostToDevice); 
+
 
     // Launch AES-CTR encryption kernel
     aes_ctr_encrypt_kernel<<<blocksPerGrid, threadsPerBlock>>>(d_plaintext, d_ciphertext, d_expandedKey, d_iv, numBlocks);
@@ -276,8 +306,8 @@ int main() {
     unsigned char *ciphertext = new unsigned char[dataSize];
     cudaMemcpy(ciphertext, d_ciphertext, dataSize * sizeof(unsigned char), cudaMemcpyDeviceToHost);
 
-    // Output encoded text
-    print_hex(ciphertext, dataSize);
+    // Output encoded text to a file
+    write_ciphertext(ciphertext, dataSize, "ciphertext.txt");
 
     // Cleanup
     cudaFree(d_plaintext);
@@ -285,5 +315,6 @@ int main() {
     cudaFree(d_iv);
     cudaFree(d_expandedKey);
     delete[] ciphertext;
+    delete[] paddedPlaintext;
     return 0;
 }
