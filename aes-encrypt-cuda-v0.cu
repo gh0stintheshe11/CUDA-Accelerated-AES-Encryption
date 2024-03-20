@@ -22,12 +22,13 @@ void read_key_or_iv(unsigned char *data, size_t size, const char *filename) {
         exit(1);
     }
     for (size_t i = 0; i < size; i++) {
-        int value;
-        if (fscanf(file, "%02x", &value) != 1) {
+        char buffer[3];
+        if (fread(buffer, 1, 2, file) != 2) {
             fprintf(stderr, "Cannot read value from file: %s\n", filename);
             exit(1);
         }
-        data[i] = value;
+        buffer[2] = '\0'; // Null-terminate the buffer
+        data[i] = (unsigned char)strtol(buffer, NULL, 16); // Convert the buffer to a hexadecimal value
     }
     fclose(file);
 }
