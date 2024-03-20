@@ -220,7 +220,7 @@ void test_subByte()
 	{
 		for(int j = 0; j < 16; j++)
 		{
-			printf("%2x ", sbox[i*16 + j]);
+			printf("%02x ", sbox[i*16 + j]);
 		}
 		printf("\n");
 	}
@@ -229,7 +229,7 @@ void test_subByte()
 
 	for(int i = 0; i < 4; i++)
 	{
-		printf("%2x => %2x ", test[i], subByte(test[i]));
+		printf("%02x => %02x ", test[i], subByte(test[i]));
 	}
 	printf("\n");
 }
@@ -252,9 +252,40 @@ void test_subBytesBlock()
 
 }
 
+
+void printStateBlock(CBlock_t* in)
+{
+	for(int i = 0; i< 4; i++)
+	{
+		uint64_t lswMask = (uint64_t) 0xff << (8 * i);
+		uint64_t mswMask = (uint64_t) 0xff << (8 * (i+4));
+
+		uint8_t lswLoByte = (uint8_t) ((in->lo & lswMask) >> (8 *   i   ));
+		uint8_t mswLoByte = (uint8_t) ((in->lo & mswMask) >> (8 * (i+4) ));
+		uint8_t lswHiByte = (uint8_t) ((in->hi & lswMask) >> (8 *   i   ));
+		uint8_t mswHiByte = (uint8_t) ((in->hi & mswMask) >> (8 * (i+4) ));
+		
+		printf("0x %02x %02x %02x %02x\n", lswLoByte, mswLoByte, lswHiByte, mswHiByte);
+
+	}
+}
+
+
 void test_shiftRows()
 {
+	CBlock_t* input;
+	input = (CBlock_t*) malloc(sizeof(CBlock_t));
+	input->lo = 0x9d58dc9fbca14d8e;
+	input->hi = 0xc6c6c6c601010101;
 	
+	printf("Input State\n");
+	printStateBlock(input);
+
+	shiftRows(input);
+
+	printf("Output State\n");
+	printStateBlock(input);
+
 }
 
 
@@ -265,8 +296,8 @@ int main(int argc, char** argv)
 	
 
 	
-	test_subBytesBlock();
-
+	//test_subBytesBlock();
+	test_shiftRows();
 
 
 	free(sbox);
