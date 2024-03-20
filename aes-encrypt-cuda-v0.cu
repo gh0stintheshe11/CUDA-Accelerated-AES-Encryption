@@ -54,6 +54,7 @@ void write_ciphertext(const unsigned char *ciphertext, size_t size, const char *
     for (size_t i = 0; i < size; i++) {
         fprintf(file, "%02x", ciphertext[i]);
     }
+    fprintf(file, "\n"); 
     fclose(file);
 }
 
