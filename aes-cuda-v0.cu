@@ -1,8 +1,25 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <cuda_runtime.h>
+// Define plaintext: 00112233445566778899aabbccddeeff
+unsigned char plaintext[16] = {
+    0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+    0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff
+};
 
-#include <cuda_runtime.h>
+// Define key for AES-128: 000102030405060708090a0b0c0d0e0f
+unsigned char key[16] = {
+    0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+    0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f
+};
+
+// Print bytes in hexadecimal format
+void print_hex(unsigned char *bytes, size_t length) {
+    for (size_t i = 0; i < length; ++i) {
+        printf("%02x", bytes[i]);
+    }
+    printf("\n");
+}
 
 __device__ __constant__ unsigned char sbox[256] = {
     0x63, 0x7C, 0x77, 0x7B, 0xF2, 0x6B, 0x6F, 0xC5, 0x30, 0x01, 0x67, 0x2B, 0xFE, 0xD7, 0xAB, 0x76,
@@ -206,6 +223,8 @@ int main() {
 
     // Copy device ciphertext back to host
     cudaMemcpy(ciphertext, d_ciphertext, dataSize * sizeof(unsigned char), cudaMemcpyDeviceToHost);
+
+    print_hex(plaintext, 16);
 
     // Cleanup
     cudaFree(d_plaintext);
