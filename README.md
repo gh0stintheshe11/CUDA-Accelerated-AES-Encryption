@@ -1,1 +1,1 @@
-# ECE1782 Project: CUDA Accelerated AES Encryption
+# ECE1782 Project: ![alt text](nvidia.png) CUDA Accelerated AES Encryption
