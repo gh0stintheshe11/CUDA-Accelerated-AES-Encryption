@@ -177,14 +177,14 @@ __device__ void AddRoundKey(unsigned char *state, const unsigned char *roundKey)
     }
 }
 
-__global__ void aes_ctr_encrypt_kernel(unsigned char *input, unsigned char *output, unsigned char *expandedKey, unsigned char *iv, unsigned long long nonceCounter) {
-
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+__global__ void aes_ctr_encrypt_kernel(unsigned char *input, unsigned char *output, unsigned char *expandedKey, unsigned char *iv, unsigned long long totalBlocks) {
     
-    // Assuming each thread processes one block of data
-    if (idx < AES_BLOCK_SIZE) { // This condition seems off; you'd typically compare idx against the total number of blocks or data size
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+    // Process only if idx is within total number of blocks
+    if (idx < totalBlocks) {
         unsigned char state[16];
-        unsigned long long int counter = nonceCounter + idx; // Increment counter for each block
+        unsigned long long int counter = idx; // Use idx as counter
 
         // Copy IV to the state and apply the counter value
         memcpy(state, iv, AES_BLOCK_SIZE); // Assuming the first 8 bytes of IV are constant for this example
@@ -202,7 +202,7 @@ __global__ void aes_ctr_encrypt_kernel(unsigned char *input, unsigned char *outp
 
         // XOR with plaintext to produce ciphertext
         for (int i = 0; i < AES_BLOCK_SIZE; ++i) {
-            output[i] = input[i] ^ state[i];
+            output[idx * AES_BLOCK_SIZE + i] = input[idx * AES_BLOCK_SIZE + i] ^ state[i];
         }
     }
 }

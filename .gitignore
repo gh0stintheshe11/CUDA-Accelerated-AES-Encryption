@@ -54,3 +54,4 @@ dkms.conf
 # Other stuff
 .vscode
 /output
+.DS_store
