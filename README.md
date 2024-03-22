@@ -1,1 +1,1 @@
-# ece1782-project
+# ECE1782 Project: CUDA Accelerated AES Encryption
