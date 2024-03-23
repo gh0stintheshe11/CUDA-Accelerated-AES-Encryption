@@ -5,9 +5,9 @@
 
 /*
     Memory targeted optimizations:
-        Add shared memory for data with in SM -> slightly improve kernel throughput
-        Add constant memory for expanded key and IV -> slightly improve kernel throughput
-        Add stream for GPU kernel -> transfer data still waste time
+        - Add shared memory for data with in SM -> slightly improve kernel throughput
+        - Add constant memory for expanded key and IV -> slightly improve kernel throughput
+        - Add stream for GPU kernel -> transfer data still waste time
 */
 
 #define AES_KEY_SIZE 16
