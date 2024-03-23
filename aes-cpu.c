@@ -214,6 +214,133 @@ void shiftRows(CBlock_t* in)
 
 
 
+
+void printBits(uint8_t a)
+{
+	printf("0b");
+	for(int i = 7; i >= 0; i--)
+	{
+		if(a & (1<<i))
+			printf("1");
+		else
+			printf("0");
+		if(i == 4)
+			printf("_");
+	}
+}
+
+/* implementing multiplication under the finite 
+ * galois field GF(2^8). Used by mixColumns. Uses
+ * the irreducible polynomial specified by the 
+ * NIST AES paper for modulo:
+ * m(x) = x^8 + x^4 + x^3 + x + 1
+ */
+
+uint8_t gfMul(uint8_t a, uint8_t b)
+{
+	printf("a = %02x; b = %02x\n", a, b);	
+	printf("a = "); printBits(a);printf("; b = ");printBits(b);printf("\n");
+ 	
+	uint8_t result = 0;
+
+	/* GF(2^8) has max degree of x^7. The corresponding m(x) has max degree of x^8. */
+	uint8_t coeff[16] = {0}; /* max power is 14 (7+7) so 16 should be enough. */
+	
+	/* go through every bit of a */
+	for(int i = 0; i < 8; i++)
+	{
+		if(a & (1 << i))
+		{
+			/* go thru every bit of b */
+			for(int j = 0; j < 8; j++)
+			{
+				if(b & (1 << j))
+				{
+					coeff[i+j]++;
+				}
+			}
+		}
+	}
+		
+	for(int i = 0; i < 16; i++)
+	{
+		coeff[i] = (coeff[i] % 2 == 0) ? 0 : 1;
+	}
+
+
+	printf(" ");
+	for(int i = 15; i>=0; i--)
+		printf("%d", coeff[i]);
+	printf("\n");
+
+	/* modulo m(x) */
+	while(coeff[15]+coeff[14]+coeff[13]+coeff[12]+coeff[11]+coeff[10]+coeff[9]+coeff[8] != 0)
+	{
+		int pos = 0;
+		for(int i = 15; i >= 0; i--)
+		{
+			if(coeff[i])
+			{
+				pos = i;
+				break;
+			}
+		}
+	
+		coeff[pos] ^= 1; // x^8
+		coeff[pos-4] ^= 1; // x^4
+		coeff[pos-5] ^= 1; // x^3
+		coeff[pos-7] ^= 1; // x^1
+		coeff[pos-8] ^= 1; // 1		
+
+		printf("^");
+		for(int i = 1; i < pos; i++)
+			printf(" ");
+		for(int i = 0; i < 9; i++)
+		{
+			if(i == 0 || i == 4 || i == 5 || i == 7 || i ==8)
+			{
+				printf("1");
+			}
+			else
+			{
+				printf("0");
+			}
+		}
+		printf("\n");
+		printf(" ");
+		for(int i = 15; i>=0; i--)
+			printf("%d", coeff[i]);
+		printf("\n");
+
+
+	}
+
+
+	/* convert coeff to byte */
+	for(int i = 0; i < 16; i++)
+	{
+		if(i == 0)
+			result += coeff[i];
+		else
+			result += (2 << (i-1)) * coeff[i];
+	}
+
+	printf("result = %02x\n", result);
+
+	return result;	
+}
+
+void mixColumns()
+{
+
+	return;
+}
+
+
+
+
+
+
 void test_subByte()
 {
 	for (int i  = 0; i< 16; i++)
@@ -289,6 +416,16 @@ void test_shiftRows()
 }
 
 
+void test_gfMul()
+{
+	gfMul(0xbf, 0x03); // expected: 0xb3
+	gfMul(0xd4, 0x02); // expected: 0xda
+	gfMul(0x5d, 0x01); // expected: 0x5d
+	gfMul(0x30, 0x01); // expected: 0x30
+
+}
+
+
 int main(int argc, char** argv)
 {
 	sbox = (uint8_t*) malloc(sizeof(uint8_t) * 16 * 16);
@@ -297,7 +434,8 @@ int main(int argc, char** argv)
 
 	
 	//test_subBytesBlock();
-	test_shiftRows();
+	//test_shiftRows();
+	test_gfMul();
 
 
 	free(sbox);
