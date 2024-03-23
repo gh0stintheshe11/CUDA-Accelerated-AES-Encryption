@@ -3,6 +3,10 @@
 #include <cuda_runtime.h>
 #include <string.h>
 
+/*
+    Base version of CUDA implementation, no special optimization
+*/
+
 #define AES_KEY_SIZE 16
 #define AES_BLOCK_SIZE 16
 
