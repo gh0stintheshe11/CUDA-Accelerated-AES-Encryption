@@ -246,9 +246,6 @@ int main() {
     cudaMalloc((void **)&d_plaintext, numBlocks * AES_BLOCK_SIZE * sizeof(unsigned char));
     cudaMalloc((void **)&d_ciphertext, numBlocks * AES_BLOCK_SIZE * sizeof(unsigned char));
 
-    // Copy host memory to device
-    cudaMemcpy(d_plaintext, paddedPlaintext, numBlocks * AES_BLOCK_SIZE * sizeof(unsigned char), cudaMemcpyHostToDevice);
-
     // Determine the number of streams based on the number of SMs
     int numStreams = 16;  // Use full 82 will decrese performance, best at 8 and 16
 
@@ -261,9 +258,6 @@ int main() {
     // Calculate the number of blocks per stream
     size_t blocksPerStream = (numBlocks + numStreams - 1) / numStreams;
 
-    // Calculate the size of each chunk
-    size_t chunkSize = dataSize / numStreams;
-
     // Allocate host memory for the ciphertext
     unsigned char* ciphertext = new unsigned char[numBlocks * AES_BLOCK_SIZE];
 
@@ -273,14 +267,20 @@ int main() {
         size_t start = i * blocksPerStream;
         size_t end = min((i + 1) * blocksPerStream, numBlocks);
 
+        // Calculate the actual size of the data processed by this stream
+        size_t actualChunkSize = (end - start) * AES_BLOCK_SIZE;
+
+        // Calculate the actual number of blocks for this stream
+        size_t actualBlocks = end - start;
+
         // Copy a chunk of the plaintext from the CPU to the GPU
-        cudaMemcpyAsync(&d_plaintext[start * AES_BLOCK_SIZE], &plaintext[start * AES_BLOCK_SIZE], chunkSize, cudaMemcpyHostToDevice, streams[i]);
+        cudaMemcpyAsync(&d_plaintext[start * AES_BLOCK_SIZE], &paddedPlaintext[start * AES_BLOCK_SIZE], actualChunkSize, cudaMemcpyHostToDevice, streams[i]);
 
         // Launch the kernel on the GPU
-        aes_ctr_encrypt_kernel<<<blocksPerStream, threadsPerBlock, 0, streams[i]>>>(d_plaintext + start * AES_BLOCK_SIZE, d_ciphertext + start * AES_BLOCK_SIZE, end - start);
+        aes_ctr_encrypt_kernel<<<actualBlocks, threadsPerBlock, 0, streams[i]>>>(d_plaintext + start * AES_BLOCK_SIZE, d_ciphertext + start * AES_BLOCK_SIZE, actualBlocks);
 
         // Copy the processed data back from the GPU to the CPU
-        cudaMemcpyAsync(&ciphertext[start * AES_BLOCK_SIZE], &d_ciphertext[start * AES_BLOCK_SIZE], (end - start) * AES_BLOCK_SIZE * sizeof(unsigned char), cudaMemcpyDeviceToHost, streams[i]);
+        cudaMemcpyAsync(&ciphertext[start * AES_BLOCK_SIZE], &d_ciphertext[start * AES_BLOCK_SIZE], actualChunkSize, cudaMemcpyDeviceToHost, streams[i]);
     }
 
     // Wait for all streams to finish
