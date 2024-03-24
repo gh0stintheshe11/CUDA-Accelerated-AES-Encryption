@@ -5,11 +5,14 @@
 #include "utils-cuda.h"
 
 /*
-    Memory targeted optimizations:
+    Memory optimizations:
         - Add shared memory for data with in SM -> slightly improve kernel throughput
         - Add constant memory for expanded key and IV -> slightly improve kernel throughput
         - Add stream for GPU kernel -> transfer data still waste time
-        - Add stream for CPU data transfer + GPU kernel computation -> CPU pass file in gpu serially, which leads to serial stream and serial kernel excution -> waste time (basically back to v0 level...)
+
+    Kernel optimization:
+        - CUDA intrinsic function (fast build-in functions): use __byte_perm in the ShiftRow(), use __mul24 in the mul(), __shfl_sync in kernel()
+        - 
 */
 
 #define AES_KEY_SIZE 16
@@ -17,6 +20,15 @@
 
 __constant__ unsigned char d_sbox[256];
 __constant__ unsigned char d_rcon[11];
+// Declare constant memory variables for the IV and expanded key
+__constant__ unsigned char constantIv[AES_BLOCK_SIZE];
+__constant__ unsigned char constantExpandedKey[176];
+
+// Host function to copy the IV and expanded key to constant memory
+void copyToConstantMemory(unsigned char *iv, unsigned char *expandedKey) {
+    cudaMemcpyToSymbol(constantIv, iv, AES_BLOCK_SIZE);
+    cudaMemcpyToSymbol(constantExpandedKey, expandedKey, 176);
+}
 
 __device__ unsigned char mul(unsigned char a, unsigned char b) {
     unsigned char p = 0;
@@ -30,7 +42,7 @@ __device__ unsigned char mul(unsigned char a, unsigned char b) {
         }
 
         high_bit = a & high_bit_mask;
-        a <<= 1;
+        a = __byte_perm(a, 0, 0x1011); // shift left
         if (high_bit) {
             a ^= modulo;
         }
@@ -43,9 +55,7 @@ __device__ unsigned char mul(unsigned char a, unsigned char b) {
 void KeyExpansionHost(unsigned char* key, unsigned char* expandedKey) {
     int i = 0;
     while (i < 4) {
-        for (int j = 0; j < 4; j++) {
-            expandedKey[i * 4 + j] = key[i * 4 + j];
-        }
+        cudaMemcpy(&expandedKey[i * 4], &key[i * 4], 4 * sizeof(unsigned char), cudaMemcpyHostToHost);
         i++;
     }
 
@@ -53,9 +63,7 @@ void KeyExpansionHost(unsigned char* key, unsigned char* expandedKey) {
     unsigned char temp[4];
 
     while (i < 44) {
-        for (int j = 0; j < 4; j++) {
-            temp[j] = expandedKey[(i - 1) * 4 + j];
-        }
+        cudaMemcpy(temp, &expandedKey[(i - 1) * 4], 4 * sizeof(unsigned char), cudaMemcpyHostToHost);
 
         if (i % 4 == 0) {
             unsigned char k = temp[0];
@@ -84,30 +92,31 @@ __device__ void SubBytes(unsigned char *state) {
 }
 
 __device__ void ShiftRows(unsigned char *state) {
-    unsigned char tmp[16];
+    uint4 *state_as_int4 = reinterpret_cast<uint4*>(state);
+    uint4 state0 = state_as_int4[0];
+    uint4 state1 = state_as_int4[1];
+    uint4 state2 = state_as_int4[2];
+    uint4 state3 = state_as_int4[3];
 
-    /* Column 1 */
-    tmp[0] = state[0];
-    tmp[1] = state[5];
-    tmp[2] = state[10];
-    tmp[3] = state[15];
-    /* Column 2 */
-    tmp[4] = state[4];
-    tmp[5] = state[9];
-    tmp[6] = state[14];
-    tmp[7] = state[3];
-    /* Column 3 */
-    tmp[8] = state[8];
-    tmp[9] = state[13];
-    tmp[10] = state[2];
-    tmp[11] = state[7];
-    /* Column 4 */
-    tmp[12] = state[12];
-    tmp[13] = state[1];
-    tmp[14] = state[6];
-    tmp[15] = state[11];
+    state_as_int4[0] = make_uint4(__byte_perm(state0.x, state1.x, 0x3210),
+                                  __byte_perm(state0.y, state1.y, 0x3210),
+                                  __byte_perm(state0.z, state1.z, 0x3210),
+                                  __byte_perm(state0.w, state1.w, 0x3210));
 
-    memcpy(state, tmp, 16);
+    state_as_int4[1] = make_uint4(__byte_perm(state1.x, state2.x, 0x3210),
+                                  __byte_perm(state1.y, state2.y, 0x3210),
+                                  __byte_perm(state1.z, state2.z, 0x3210),
+                                  __byte_perm(state1.w, state2.w, 0x3210));
+
+    state_as_int4[2] = make_uint4(__byte_perm(state2.x, state3.x, 0x3210),
+                                  __byte_perm(state2.y, state3.y, 0x3210),
+                                  __byte_perm(state2.z, state3.z, 0x3210),
+                                  __byte_perm(state2.w, state3.w, 0x3210));
+
+    state_as_int4[3] = make_uint4(__byte_perm(state3.x, state0.x, 0x3210),
+                                  __byte_perm(state3.y, state0.y, 0x3210),
+                                  __byte_perm(state3.z, state0.z, 0x3210),
+                                  __byte_perm(state3.w, state0.w, 0x3210));
 }
 
 __device__ void MixColumns(unsigned char *state) {
@@ -133,6 +142,7 @@ __device__ void aes_encrypt_block(unsigned char *input, unsigned char *output, u
     unsigned char state[16];
 
     // Copy the input to the state array
+    #pragma unroll
     for (int i = 0; i < 16; ++i) {
         state[i] = input[i];
     }
@@ -154,19 +164,10 @@ __device__ void aes_encrypt_block(unsigned char *input, unsigned char *output, u
     AddRoundKey(state, expandedKey + 10 * 16);
 
     // Copy the state to the output
+    #pragma unroll
     for (int i = 0; i < 16; ++i) {
         output[i] = state[i];
     }
-}
-
-// Declare constant memory variables for the IV and expanded key
-__constant__ unsigned char constantIv[AES_BLOCK_SIZE];
-__constant__ unsigned char constantExpandedKey[176];
-
-// Host function to copy the IV and expanded key to constant memory
-void copyToConstantMemory(unsigned char *iv, unsigned char *expandedKey) {
-    cudaMemcpyToSymbol(constantIv, iv, AES_BLOCK_SIZE);
-    cudaMemcpyToSymbol(constantExpandedKey, expandedKey, 176);
 }
 
 __global__ void aes_ctr_encrypt_kernel(unsigned char *plaintext, unsigned char *ciphertext, int numBlocks) {
@@ -198,8 +199,11 @@ __global__ void aes_ctr_encrypt_kernel(unsigned char *plaintext, unsigned char *
         aes_encrypt_block(localIv, block, constantExpandedKey);  // Use constantExpandedKey here
 
         // XOR the plaintext with the encrypted block
+        // __shfl_sync is used to exchange the block array between the threads in a warp. The 0xffffffff mask indicates that all threads in the warp participate in the shuffle operation. The block[i] is the value to be shuffled, and threadIdx.x is the source lane.
+        #pragma unroll
         for (int i = 0; i < AES_BLOCK_SIZE; ++i) {
-            ciphertext[tid * AES_BLOCK_SIZE + i] = plaintext[tid * AES_BLOCK_SIZE + i] ^ block[i];
+            unsigned char block_i = __shfl_sync(0xffffffff, block[i], threadIdx.x);
+            ciphertext[tid * AES_BLOCK_SIZE + i] = plaintext[tid * AES_BLOCK_SIZE + i] ^ block_i;
         }
     }
 }
@@ -214,7 +218,7 @@ int main() {
 
     // Determine the size of the file and read the plaintext
     size_t dataSize;
-    unsigned char* plaintext;
+    unsigned char *plaintext;
     read_plaintext(&plaintext, &dataSize, "plaintext.txt"); 
 
     unsigned char *d_plaintext, *d_ciphertext;
@@ -240,11 +244,19 @@ int main() {
     // Pad the plaintext with zeros
     unsigned char *paddedPlaintext = new unsigned char[numBlocks * AES_BLOCK_SIZE];
     memcpy(paddedPlaintext, plaintext, dataSize);
-    memset(paddedPlaintext + dataSize, 0, numBlocks * AES_BLOCK_SIZE - dataSize);
 
     // Allocate device memory
     cudaMalloc((void **)&d_plaintext, numBlocks * AES_BLOCK_SIZE * sizeof(unsigned char));
     cudaMalloc((void **)&d_ciphertext, numBlocks * AES_BLOCK_SIZE * sizeof(unsigned char));
+
+    // Allocate memory for the ciphertext on the host
+    unsigned char *ciphertext = new unsigned char[dataSize];
+
+    // Copy host memory to device
+    cudaMemcpy(d_plaintext, plaintext, dataSize * sizeof(unsigned char), cudaMemcpyHostToDevice);
+
+    // Set the rest of d_plaintext to zero
+    cudaMemset(d_plaintext + dataSize, 0, numBlocks * AES_BLOCK_SIZE - dataSize);
 
     // Determine the number of streams based on the number of SMs
     int numStreams = 16;  // Use full 82 will decrese performance, best at 8 and 16
@@ -258,30 +270,21 @@ int main() {
     // Calculate the number of blocks per stream
     size_t blocksPerStream = (numBlocks + numStreams - 1) / numStreams;
 
-    // Allocate host memory for the ciphertext
-    unsigned char* ciphertext = new unsigned char[numBlocks * AES_BLOCK_SIZE];
-
-    // Inside the loop over the streams
+    // Loop over the streams
     for (int i = 0; i < numStreams; ++i) {
-        // Calculate the start and end indices for this stream
-        size_t start = i * blocksPerStream;
-        size_t end = min((i + 1) * blocksPerStream, numBlocks);
+        // Calculate the start and end block for this stream
+        size_t startBlock = i * blocksPerStream;
+        size_t endBlock = min(startBlock + blocksPerStream, numBlocks);
 
-        // Calculate the actual size of the data processed by this stream
-        size_t actualChunkSize = (end - start) * AES_BLOCK_SIZE;
+        // Check if there are any blocks for this stream
+        if (startBlock < endBlock) {
+            // Calculate the number of blocks and threads for this stream
+            dim3 blocks(endBlock - startBlock);
+            dim3 threads(AES_BLOCK_SIZE);
 
-        // Calculate the actual number of blocks for this stream
-        size_t actualBlocks = end - start;
-
-        // Copy a chunk of the plaintext from the CPU to the GPU
-        cudaMemcpyAsync(&d_plaintext[start * AES_BLOCK_SIZE], &paddedPlaintext[start * AES_BLOCK_SIZE], actualChunkSize, cudaMemcpyHostToDevice, streams[i]);
-
-
-        // Launch the kernel on the GPU
-        aes_ctr_encrypt_kernel<<<actualBlocks, threadsPerBlock, 0, streams[i]>>>(d_plaintext + start * AES_BLOCK_SIZE, d_ciphertext + start * AES_BLOCK_SIZE, actualBlocks);
-
-        // Copy the processed data back from the GPU to the CPU
-        cudaMemcpyAsync(&ciphertext[start * AES_BLOCK_SIZE], &d_ciphertext[start * AES_BLOCK_SIZE], actualChunkSize, cudaMemcpyDeviceToHost, streams[i]);
+            // Launch the kernel in this stream
+            aes_ctr_encrypt_kernel<<<blocks, threads, 0, streams[i]>>>(d_plaintext + startBlock * AES_BLOCK_SIZE, d_ciphertext + startBlock * AES_BLOCK_SIZE, endBlock - startBlock);
+        }
     }
 
     // Wait for all streams to finish
@@ -289,15 +292,22 @@ int main() {
         cudaStreamSynchronize(streams[i]);
     }
 
+    // Clean up
+    for (int i = 0; i < numStreams; ++i) {
+        cudaStreamDestroy(streams[i]);
+    }
+    delete[] streams;
+
+    // Copy device ciphertext back to host
+    cudaMemcpy(ciphertext, d_ciphertext, dataSize * sizeof(unsigned char), cudaMemcpyDeviceToHost);
+
     // Output encoded text to a file
     write_ciphertext(ciphertext, dataSize, "ciphertext.txt");
 
     // Cleanup
     cudaFree(d_plaintext);
     cudaFree(d_ciphertext);
-    delete[] streams;
-    delete[] paddedPlaintext;
+    delete[] ciphertext;
     delete[] plaintext; 
-
     return 0;
 }
