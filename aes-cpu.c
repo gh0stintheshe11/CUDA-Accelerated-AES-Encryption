@@ -6,6 +6,7 @@
 #define KEY_SIZE 128
 #define N_ROUND 10
 
+#define DEBUG 0
 
 #define ROTL8(x,shift) ((uint8_t) ((x) << (shift)) | ((x) >> (8 - (shift))))
 
@@ -235,12 +236,20 @@ void printBits(uint8_t a)
  * NIST AES paper for modulo:
  * m(x) = x^8 + x^4 + x^3 + x + 1
  */
-
+uint8_t _gfMul(uint8_t, uint8_t, int);
 uint8_t gfMul(uint8_t a, uint8_t b)
 {
-	printf("a = %02x; b = %02x\n", a, b);	
-	printf("a = "); printBits(a);printf("; b = ");printBits(b);printf("\n");
- 	
+	return _gfMul(a, b, DEBUG);
+}
+
+uint8_t _gfMul(uint8_t a, uint8_t b, int print)
+{
+	if(print)
+	{
+		printf("a = %02x; b = %02x\n", a, b);	
+		printf("a = "); printBits(a);printf("; b = ");printBits(b);printf("\n");
+	}
+
 	uint8_t result = 0;
 
 	/* GF(2^8) has max degree of x^7. The corresponding m(x) has max degree of x^8. */
@@ -268,10 +277,13 @@ uint8_t gfMul(uint8_t a, uint8_t b)
 	}
 
 
-	printf(" ");
-	for(int i = 15; i>=0; i--)
-		printf("%d", coeff[i]);
-	printf("\n");
+	if(print)
+	{
+		printf(" ");
+		for(int i = 15; i>=0; i--)
+			printf("%d", coeff[i]);
+		printf("\n");
+	}
 
 	/* modulo m(x) */
 	while(coeff[15]+coeff[14]+coeff[13]+coeff[12]+coeff[11]+coeff[10]+coeff[9]+coeff[8] != 0)
@@ -292,25 +304,29 @@ uint8_t gfMul(uint8_t a, uint8_t b)
 		coeff[pos-7] ^= 1; // x^1
 		coeff[pos-8] ^= 1; // 1		
 
-		printf("^");
-		for(int i = 1; i < pos; i++)
-			printf(" ");
-		for(int i = 0; i < 9; i++)
+		
+		if(print)
 		{
-			if(i == 0 || i == 4 || i == 5 || i == 7 || i ==8)
+			printf("^");
+			for(int i = 1; i < pos; i++)
+				printf(" ");
+			for(int i = 0; i < 9; i++)
 			{
-				printf("1");
+				if(i == 0 || i == 4 || i == 5 || i == 7 || i ==8)
+				{
+					printf("1");
+				}
+				else
+				{
+					printf("0");
+				}
 			}
-			else
-			{
-				printf("0");
-			}
+			printf("\n");
+			printf(" ");
+			for(int i = 15; i>=0; i--)
+				printf("%d", coeff[i]);
+			printf("\n");
 		}
-		printf("\n");
-		printf(" ");
-		for(int i = 15; i>=0; i--)
-			printf("%d", coeff[i]);
-		printf("\n");
 
 
 	}
@@ -325,15 +341,107 @@ uint8_t gfMul(uint8_t a, uint8_t b)
 			result += (2 << (i-1)) * coeff[i];
 	}
 
-	printf("result = %02x\n", result);
+	if(print)
+		printf("result = %02x\n", result);
 
 	return result;	
 }
 
-void mixColumns()
+/* mixColumns: take each column of the stack block, mul by the following 4x4 matrix
+ * 2 3 1 1 
+ * 1 2 3 1
+ * 1 1 2 3
+ * 3 1 1 2
+ */
+
+void mixColumns(CBlock_t* in)
 {
 
-	return;
+	/* 1st column */
+
+	/* save the column first bc we are overwriting */
+	uint8_t col[4] = {0};
+	uint8_t res[4] = {0};
+	col[0] = in->lo & (uint64_t)0xff;
+	col[1] = (in->lo & (uint64_t)0xff << (8)) >> (8);
+	col[2] = (in->lo & (uint64_t)0xff << (8*2)) >> (8*2);
+	col[3] = (in->lo & (uint64_t)0xff << (8*3)) >> (8*3);
+
+	res[0] = gfMul(col[0], 2) ^ gfMul(col[1], 3) ^ gfMul(col[2], 1) ^ gfMul(col[3], 1);
+	res[1] = gfMul(col[0], 1) ^ gfMul(col[1], 2) ^ gfMul(col[2], 3) ^ gfMul(col[3], 1);
+	res[2] = gfMul(col[0], 1) ^ gfMul(col[1], 1) ^ gfMul(col[2], 2) ^ gfMul(col[3], 3);
+	res[3] = gfMul(col[0], 3) ^ gfMul(col[1], 1) ^ gfMul(col[2], 1) ^ gfMul(col[3], 2);
+
+	/* write to state */
+	for(int i = 0; i<4; i++)
+	{
+		in->lo &=  ~( (uint64_t) 0xff << (8 * i) ); // clear
+		in->lo |= ( (uint64_t) res[i] ) << (8 * i); // write
+	}
+
+
+	/* 2nd column */
+
+	/* save the column first bc we are overwriting */
+	col[0] = (in->lo & (uint64_t)0xff << (8*4)) >> (8*4);
+	col[1] = (in->lo & (uint64_t)0xff << (8*5)) >> (8*5);
+	col[2] = (in->lo & (uint64_t)0xff << (8*6)) >> (8*6);
+	col[3] = (in->lo & (uint64_t)0xff << (8*7)) >> (8*7);
+
+	res[0] = gfMul(col[0], 2) ^ gfMul(col[1], 3) ^ gfMul(col[2], 1) ^ gfMul(col[3], 1);
+	res[1] = gfMul(col[0], 1) ^ gfMul(col[1], 2) ^ gfMul(col[2], 3) ^ gfMul(col[3], 1);
+	res[2] = gfMul(col[0], 1) ^ gfMul(col[1], 1) ^ gfMul(col[2], 2) ^ gfMul(col[3], 3);
+	res[3] = gfMul(col[0], 3) ^ gfMul(col[1], 1) ^ gfMul(col[2], 1) ^ gfMul(col[3], 2);
+
+	/* write to state */
+	for(int i = 0; i<4; i++)
+	{
+		in->lo &=  ~( (uint64_t) 0xff << (8 * (i+4)) ); // clear
+		in->lo |= ( (uint64_t) res[i] ) << (8 * (i+4)); // write
+	}
+
+
+	/* 3rd column */
+
+	/* save the column first bc we are overwriting */
+	col[0] = in->hi & (uint64_t)0xff;
+	col[1] = (in->hi & (uint64_t)0xff << (8)) >> (8);
+	col[2] = (in->hi & (uint64_t)0xff << (8*2)) >> (8*2);
+	col[3] = (in->hi & (uint64_t)0xff << (8*3)) >> (8*3);
+
+	res[0] = gfMul(col[0], 2) ^ gfMul(col[1], 3) ^ gfMul(col[2], 1) ^ gfMul(col[3], 1);
+	res[1] = gfMul(col[0], 1) ^ gfMul(col[1], 2) ^ gfMul(col[2], 3) ^ gfMul(col[3], 1);
+	res[2] = gfMul(col[0], 1) ^ gfMul(col[1], 1) ^ gfMul(col[2], 2) ^ gfMul(col[3], 3);
+	res[3] = gfMul(col[0], 3) ^ gfMul(col[1], 1) ^ gfMul(col[2], 1) ^ gfMul(col[3], 2);
+
+	/* write to state */
+	for(int i = 0; i<4; i++)
+	{
+		in->hi &=  ~( (uint64_t) 0xff << (8 * i) ); // clear
+		in->hi |= ( (uint64_t) res[i] ) << (8 * i); // write
+	}
+
+
+	/* 4th column */
+
+	/* save the column first bc we are overwriting */
+	col[0] = (in->hi & (uint64_t)0xff << (8*4)) >> (8*4);
+	col[1] = (in->hi & (uint64_t)0xff << (8*5)) >> (8*5);
+	col[2] = (in->hi & (uint64_t)0xff << (8*6)) >> (8*6);
+	col[3] = (in->hi & (uint64_t)0xff << (8*7)) >> (8*7);
+
+	res[0] = gfMul(col[0], 2) ^ gfMul(col[1], 3) ^ gfMul(col[2], 1) ^ gfMul(col[3], 1);
+	res[1] = gfMul(col[0], 1) ^ gfMul(col[1], 2) ^ gfMul(col[2], 3) ^ gfMul(col[3], 1);
+	res[2] = gfMul(col[0], 1) ^ gfMul(col[1], 1) ^ gfMul(col[2], 2) ^ gfMul(col[3], 3);
+	res[3] = gfMul(col[0], 3) ^ gfMul(col[1], 1) ^ gfMul(col[2], 1) ^ gfMul(col[3], 2);
+
+	/* write to state */
+	for(int i = 0; i<4; i++)
+	{
+		in->hi &=  ~( (uint64_t) 0xff << (8 * (i+4)) ); // clear
+		in->hi |= ( (uint64_t) res[i] ) << (8 * (i+4)); // write
+	}
+
 }
 
 
@@ -425,6 +533,26 @@ void test_gfMul()
 
 }
 
+void test_mixColumns()
+{
+	CBlock_t* input;
+	input = (CBlock_t*) malloc(sizeof(CBlock_t));
+	input->lo = 0x5c220af2455313db;
+	input->hi = 0xc6c6c6c601010101;
+	
+	printf("Input State\n");
+	printStateBlock(input);
+
+	mixColumns(input);
+
+	printf("Output State\n");
+	printStateBlock(input);
+
+
+}
+
+
+
 
 int main(int argc, char** argv)
 {
@@ -435,8 +563,8 @@ int main(int argc, char** argv)
 	
 	//test_subBytesBlock();
 	//test_shiftRows();
-	test_gfMul();
-
+	//test_gfMul();
+	test_mixColumns();
 
 	free(sbox);
 
