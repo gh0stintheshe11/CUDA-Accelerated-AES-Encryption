@@ -19,6 +19,8 @@ typedef struct CipherBlock
 
 static uint8_t* sbox;
 
+void printStateBlock(CBlock_t*);
+
 /* Rijndael Forward S-box */
 void initSbox(uint8_t* sbox)
 {
@@ -445,7 +447,203 @@ void mixColumns(CBlock_t* in)
 }
 
 
+/* 
+ * Calculate the round key given last round key and current round number.
+ * Assume 128-bit key size.
+ * 
+ */
+void keySchedule(CBlock_t* rk, int round)
+{
+	if(DEBUG)
+	{
+		printf("Begin: Round Key generation for round %d\nInput RK:\n", round);
+		printStateBlock(rk);	
+	}
 
+	/* round 0 uses encrypt key itself */
+	if(round == 0)
+		return;
+	/* Round constant lookup */
+	const uint8_t rc[10] = {0x1, 0x2, 0x4, 0x8, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x36};
+
+	/* Save 4th column (right most) before performing rot+sub */
+	uint32_t rightMostCol = (uint32_t) ( (rk->hi & ((uint64_t)0xffffffff << 32)) >> 32 );
+
+	/* RotWord on right most column then subByte():
+	 * B12		sbox(B13)
+	 * B13		sbox(B14)
+	 * B14   ===>	sbox(B15)
+	 * B15		sbox(B12)
+	 */
+	uint8_t tempByte; // holds B12
+	uint8_t byte;
+	uint64_t mask;
+
+	/* read B12 */
+	mask = (uint64_t) 0xff << (8 * 4);
+	tempByte = (uint8_t) (  ( rk->hi & mask  ) >> (8 * 4)  );
+	
+	// B12 = B13
+	/* read B13 */
+	mask = (uint64_t) 0xff << (8 * 5);
+	byte = (uint8_t) (  ( rk->hi & mask  ) >> (8 * 5)  ); // B13
+	/* write to B12 */
+	rk->hi &=  ~( (uint64_t) 0xff << (8 * 4) ); // clear
+	rk->hi |= ( (uint64_t) subByte(byte) ) << (8 * 4); // write
+	
+	// B13 = B14
+	/* read B14 */
+	mask = (uint64_t) 0xff << (8 * 6);
+	byte = (uint8_t) (  ( rk->hi & mask  ) >> (8 * 6)  ); // B14
+	/* write to B13 */
+	rk->hi &=  ~( (uint64_t) 0xff << (8 * 5) ); // clear
+	rk->hi |= ( (uint64_t) subByte(byte) ) << (8 * 5); // write
+
+	// B14 = B15
+	/* read B15 */
+	mask = (uint64_t) 0xff << (8 * 7);
+	byte = (uint8_t) (  ( rk->hi & mask  ) >> (8 * 7)  ); // B15
+	/* write to B14 */
+	rk->hi &=  ~( (uint64_t) 0xff << (8 * 6) ); // clear
+	rk->hi |= ( (uint64_t) subByte(byte) ) << (8 * 6); // write
+
+	// B15 = tempByte
+	/* write to B15 */
+	rk->hi &=  ~( (uint64_t) 0xff << (8 * 7) ); // clear
+	rk->hi |= ( (uint64_t) subByte(tempByte) ) << (8 * 7); // write
+	
+	
+	if(DEBUG)
+	{
+		printf("4th col rot+sub:\n");
+		printStateBlock(rk);
+	}
+	
+
+	/* left most column xor right most column xor round constant */
+
+	for(int i = 0; i < 4; i++)
+	{
+		/* read B0 */
+		mask = (uint64_t) 0xff << (8 * i);
+		byte = (uint8_t) (  ( rk->lo & mask  ) >> (8 * i)  ); // B0
+		/* read B12 */
+		mask = (uint64_t) 0xff << (8 * (i+4));
+		tempByte = (uint8_t) (  ( rk->hi & mask  ) >> (8 * (i+4))  ); // B12
+		/* calc byte */
+		byte = byte ^ tempByte ^ (  (i==0) ? rc[round - 1] : 0  );
+		/* write to B0 */
+		rk->lo &=  ~( (uint64_t) 0xff << (8 * i) ); // clear
+		rk->lo |= ( (uint64_t) byte ) << (8 * i); // write
+	}
+	
+	if(DEBUG)
+	{
+		printf("1st col done:\n");
+		printStateBlock(rk);
+	}
+	
+	uint32_t col, lcol;
+
+	
+	/* COL 2 */
+	/* read col 1,2 */
+	mask = (uint64_t) 0xffffffff << (32);
+	col = (uint32_t) ( (rk->lo & mask) >> (32) ); // col 2
+	mask = (uint64_t) 0xffffffff << (0);
+	lcol = (uint32_t) ( (rk->lo & mask) >> (0) ); // col 1
+	/* calc new col 2 */
+	col = col ^ lcol;
+	/* write back to col 2 */
+	mask = (uint64_t) 0xffffffff << (32);
+	rk->lo &= ~mask; // clear
+	rk->lo |= ((uint64_t) col) << (32); // write
+
+	
+	if(DEBUG)
+	{
+		printf("2nd col done:\n");
+		printStateBlock(rk);
+	}
+
+	
+	/* COL 3 */
+	/* read col 2,3 */
+	mask = (uint64_t) 0xffffffff << (0);
+	col = (uint32_t) ( (rk->hi & mask) >> (0) ); // col 3
+	mask = (uint64_t) 0xffffffff << (32);
+	lcol = (uint32_t) ( (rk->lo & mask) >> (32) ); // col 2
+	/* calc new col 3 */
+	col = col ^ lcol;
+	/* write back to col 3 */
+	mask = (uint64_t) 0xffffffff << (0);
+	rk->hi &= ~mask; // clear
+	rk->hi |= ((uint64_t) col) << (0); // write
+
+	if(DEBUG)
+	{
+		printf("3rd col done:\n");
+		printStateBlock(rk);
+	}
+
+	
+	/* COL 4: use saved col 4 */
+	/* read col 3 */
+	mask = (uint64_t) 0xffffffff << (0);
+	lcol = (uint32_t) ( (rk->hi & mask) >> (0) ); // col 3
+	/* calc new col 4 */
+	col = rightMostCol ^ lcol;
+	/* write back to col 4 */
+	mask = (uint64_t) 0xffffffff << (32);
+	rk->hi &= ~mask; // clear
+	rk->hi |= ((uint64_t) col) << (32); // write
+
+	if(DEBUG)
+	{
+		printf("4th col done:\n");
+		printStateBlock(rk);
+	}
+	
+
+}
+
+
+/*
+ * addRoundKey: xor state block with current round key
+ */
+void addRoundKey(CBlock_t* in, CBlock_t* rk)
+{
+	uint32_t stateCol, rkCol;
+	uint64_t mask;
+	
+	/* COL1 */
+	mask = (uint64_t) 0xffffffff << 0;
+	stateCol = (uint32_t) ((in->lo & mask) >> (0));
+	rkCol = (uint32_t) ((rk->lo & mask) >> (0));
+	in->lo &= ~mask; // clear
+	in->lo |= ((uint64_t) (stateCol ^ rkCol)) << (0); // write
+
+	/* COL2 */
+	mask = (uint64_t) 0xffffffff << 32;
+	stateCol = (uint32_t) ((in->lo & mask) >> (32));
+	rkCol = (uint32_t) ((rk->lo & mask) >> (32));
+	in->lo &= ~mask; // clear
+	in->lo |= ((uint64_t) (stateCol ^ rkCol)) << (32); // write
+
+	/* COL3 */
+	mask = (uint64_t) 0xffffffff << 0;
+	stateCol = (uint32_t) ((in->hi & mask) >> (0));
+	rkCol = (uint32_t) ((rk->hi & mask) >> (0));
+	in->hi &= ~mask; // clear
+	in->hi |= ((uint64_t) (stateCol ^ rkCol)) << (0); // write
+
+	/* COL4 */
+	mask = (uint64_t) 0xffffffff << 32;
+	stateCol = (uint32_t) ((in->hi & mask) >> (32));
+	rkCol = (uint32_t) ((rk->hi & mask) >> (32));
+	in->hi &= ~mask; // clear
+	in->hi |= ((uint64_t) (stateCol ^ rkCol)) << (32); // write
+}
 
 
 
@@ -521,6 +719,7 @@ void test_shiftRows()
 	printf("Output State\n");
 	printStateBlock(input);
 
+	free(input);
 }
 
 
@@ -537,9 +736,11 @@ void test_mixColumns()
 {
 	CBlock_t* input;
 	input = (CBlock_t*) malloc(sizeof(CBlock_t));
-	input->lo = 0x5c220af2455313db;
-	input->hi = 0xc6c6c6c601010101;
+	input->lo = 0x8f26136eedbc1985;
+	input->hi = 0xc2ea823cf685e061;
 	
+
+
 	printf("Input State\n");
 	printStateBlock(input);
 
@@ -548,6 +749,64 @@ void test_mixColumns()
 	printf("Output State\n");
 	printStateBlock(input);
 
+	free(input);
+}
+
+
+void test_keySchedule()
+{
+	CBlock_t* input;
+	input = (CBlock_t*) malloc(sizeof(CBlock_t));
+	input->lo = 0xa6d2ae2816157e2b;
+	input->hi = 0x3c4fcf098815f7ab;
+	
+
+
+	printf("Input Key\n");
+	printStateBlock(input);
+
+	keySchedule(input, 1);
+
+	printf("Round 1 RoundKey\n");
+	printStateBlock(input);
+
+
+	keySchedule(input, 2);
+
+	printf("Round 2 RoundKey\n");
+	printStateBlock(input);
+
+
+	free(input);
+}
+
+
+void test_addRoundKey()
+{
+	CBlock_t *input, *rk;
+	input = (CBlock_t*) malloc(sizeof(CBlock_t));
+	rk = (CBlock_t*) malloc(sizeof(CBlock_t));
+	
+	input->lo = 0x82bbad40f0d3856b;
+	input->hi = 0xb32cc4cd3191d88a;
+	
+	rk->lo = 0xb12c548817fefaa0;
+	rk->hi = 0x05766c2a3939a323;
+
+
+	printf("Input State\n");
+	printStateBlock(input);
+	printf("RK\n");
+	printStateBlock(rk);
+
+	addRoundKey(input, rk);
+
+	printf("Output State\n");
+	printStateBlock(input);
+
+
+	free(input);
+	free(rk);
 
 }
 
@@ -564,7 +823,10 @@ int main(int argc, char** argv)
 	//test_subBytesBlock();
 	//test_shiftRows();
 	//test_gfMul();
-	test_mixColumns();
+	//test_mixColumns();
+	
+	//test_keySchedule();
+	test_addRoundKey();
 
 	free(sbox);
 
