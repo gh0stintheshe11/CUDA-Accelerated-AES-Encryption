@@ -54,7 +54,7 @@ void read_key_or_iv(unsigned char *data, size_t size, const char *filename) {
     fclose(file);
 }
 
-void read_plaintext(unsigned char **plaintext, size_t *size, const char *filename) {
+void read_file_as_binary(unsigned char **data, size_t *size, const char *filename) {
     FILE *file = fopen(filename, "rb");
     if (file == NULL) {
         fprintf(stderr, "Cannot open file: %s\n", filename);
@@ -67,9 +67,9 @@ void read_plaintext(unsigned char **plaintext, size_t *size, const char *filenam
     fseek(file, 0, SEEK_SET);
 
     // Allocate the buffer
-    *plaintext = new unsigned char[*size];
+    *data = new unsigned char[*size];
 
-    size_t bytesRead = fread(*plaintext, 1, *size, file);
+    size_t bytesRead = fread(*data, 1, *size, file);
     if (bytesRead != *size) {
         fprintf(stderr, "Failed to read the entire file: %s\n", filename);
         exit(1);

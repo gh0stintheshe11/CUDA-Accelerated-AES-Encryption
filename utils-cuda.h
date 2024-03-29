@@ -13,7 +13,7 @@ void print_hex(unsigned char *bytes, size_t length);
 void read_key_or_iv(unsigned char *data, size_t size, const char *filename);
 
 // Function to read plaintext from a file
-void read_plaintext(unsigned char **plaintext, size_t *size, const char *filename);
+void read_file_as_binary(unsigned char **data, size_t *size, const char *filename);
 
 // Function to write ciphertext to a file
 void write_ciphertext(const unsigned char *ciphertext, size_t size, const char *filename);
