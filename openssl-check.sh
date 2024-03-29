@@ -18,23 +18,12 @@ iv=$(tr -d '\n' < "$iv_file")
 # Perform the encryption
 openssl enc -aes-128-ctr -in "$plaintext_file" -out openssl_ciphertext.bin -K "$key" -iv "$iv" -nosalt
 
-# Convert binary ciphertext to hexadecimal format
-xxd -p openssl_ciphertext.bin >  openssl_ciphertext.txt
-
-# Remove all newlines and spaces
-tr -d '\n ' < openssl_ciphertext.txt > openssl_temp.txt
-tr -d '\n ' < ciphertext.txt > cuda_temp.txt
-
-mv openssl_temp.txt openssl_ciphertext.txt
-mv cuda_temp.txt ciphertext.txt
-
-rm openssl_ciphertext.bin
 echo "OpenSSL encryption complete."
 
-# Show difference between CUDA encrypted text and OpenSSL encrypted text
-diff_output=$(diff -y --suppress-common-lines ciphertext.txt openssl_ciphertext.txt | wc -l)
+# Compare CUDA encrypted text and OpenSSL encrypted text
+diff_output=$(cmp -l ciphertext.bin openssl_ciphertext.bin | wc -l)
 if [ $diff_output -eq 0 ]; then
     echo "No differences"
 else
-    echo "$diff_output lines are different"
+    echo "$diff_output bytes are different"
 fi
