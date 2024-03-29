@@ -27,14 +27,6 @@ unsigned char h_rcon[11] = {
     0x20, 0x40, 0x80, 0x1B, 0x36
 };
 
-// Print bytes in hexadecimal format
-void print_hex(unsigned char *bytes, size_t length) {
-    for (size_t i = 0; i < length; ++i) {
-        printf("%02x", bytes[i]);
-    }
-    printf("\n");
-}
-
 // Function to read key or IV from a file
 void read_key_or_iv(unsigned char *data, size_t size, const char *filename) {
     FILE *file = fopen(filename, "r");
@@ -78,13 +70,24 @@ void read_file_as_binary(unsigned char **data, size_t *size, const char *filenam
     fclose(file);
 }
 
+// Function to convert a byte to a hexadecimal string
+char* byte_to_hex(unsigned char byte) {
+    static char hex[3];
+    sprintf(hex, "%02x", byte);
+    return hex;
+}
+
 // Function to write ciphertext to a file
 void write_ciphertext(const unsigned char *ciphertext, size_t size, const char *filename) {
-    FILE *file = fopen(filename, "wb");
+    FILE *file = fopen(filename, "w");
     if (file == NULL) {
         fprintf(stderr, "Cannot open file: %s\n", filename);
         exit(1);
     }
-    fwrite(ciphertext, 1, size, file);
+
+    for (size_t i = 0; i < size; ++i) {
+        fprintf(file, "%s", byte_to_hex(ciphertext[i]));
+    }
+
     fclose(file);
 }

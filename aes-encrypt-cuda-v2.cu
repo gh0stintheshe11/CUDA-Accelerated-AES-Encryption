@@ -230,17 +230,26 @@ int main() {
     // Copy the IV and expanded key to constant memory
     copyToConstantMemory(iv, expandedKey);
 
+    // Calculate the number of padding bytes needed
+    size_t padding = 16 - (dataSize % 16);
+
+    // Create a new array of the correct size
+    unsigned char *paddedPlaintext = new unsigned char[dataSize + padding];
+
+    // Copy the plaintext into the new array
+    memcpy(paddedPlaintext, plaintext, dataSize);
+
+    // Add the padding bytes to the end of the new array
+    for (size_t i = 0; i < padding; ++i) {
+        paddedPlaintext[dataSize + i] = padding;
+    }
+
     // Calculate the number of AES blocks needed
     size_t numBlocks = (dataSize + AES_BLOCK_SIZE - 1) / AES_BLOCK_SIZE;
 
     // Define the size of the grid and the blocks
     dim3 threadsPerBlock(256); // Use a reasonable number of threads per block
     dim3 blocksPerGrid((numBlocks + threadsPerBlock.x - 1) / threadsPerBlock.x);
-
-    // Pad the plaintext with zeros
-    unsigned char *paddedPlaintext = new unsigned char[numBlocks * AES_BLOCK_SIZE];
-    memcpy(paddedPlaintext, plaintext, dataSize);
-    memset(paddedPlaintext + dataSize, 0, numBlocks * AES_BLOCK_SIZE - dataSize);
 
     // Allocate device memory
     cudaMalloc((void **)&d_plaintext, numBlocks * AES_BLOCK_SIZE * sizeof(unsigned char));
@@ -289,7 +298,7 @@ int main() {
     }
 
     // Output encoded text to a file
-    write_ciphertext(ciphertext, dataSize, "ciphertext.txt");
+    write_ciphertext(ciphertext, dataSize + padding, "ciphertext.bin");
 
     // Cleanup
     cudaFree(d_plaintext);
