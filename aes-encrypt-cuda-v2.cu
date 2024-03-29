@@ -215,7 +215,7 @@ int main() {
     // Determine the size of the file and read the plaintext
     size_t dataSize;
     unsigned char* plaintext;
-    read_plaintext(&plaintext, &dataSize, "plaintext.txt"); 
+    read_file_as_binary(&plaintext, &dataSize, "plaintext.txt"); 
 
     unsigned char *d_plaintext, *d_ciphertext;
 
