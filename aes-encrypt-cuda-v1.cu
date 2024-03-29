@@ -229,20 +229,6 @@ int main() {
     // Copy the IV and expanded key to constant memory
     copyToConstantMemory(iv, expandedKey);
 
-    // Calculate the number of padding bytes needed
-    size_t padding = 16 - (dataSize % 16);
-
-    // Create a new array of the correct size
-    unsigned char *paddedPlaintext = new unsigned char[dataSize + padding];
-
-    // Copy the plaintext into the new array
-    memcpy(paddedPlaintext, plaintext, dataSize);
-
-    // Add the padding bytes to the end of the new array
-    for (size_t i = 0; i < padding; ++i) {
-        paddedPlaintext[dataSize + i] = padding;
-    }
-
     // Calculate the number of AES blocks needed
     size_t numBlocks = (dataSize + AES_BLOCK_SIZE - 1) / AES_BLOCK_SIZE;
 
@@ -255,13 +241,10 @@ int main() {
     cudaMalloc((void **)&d_ciphertext, numBlocks * AES_BLOCK_SIZE * sizeof(unsigned char));
 
     // Allocate memory for the ciphertext on the host
-    unsigned char *ciphertext = new unsigned char[dataSize + padding];
+    unsigned char *ciphertext = new unsigned char[numBlocks * AES_BLOCK_SIZE];
 
     // Copy host memory to device
-    cudaMemcpy(d_plaintext, paddedPlaintext, numBlocks * AES_BLOCK_SIZE * sizeof(unsigned char), cudaMemcpyHostToDevice);
-
-    // Set the rest of d_plaintext to zero
-    cudaMemset(d_plaintext + dataSize, 0, numBlocks * AES_BLOCK_SIZE - dataSize);
+    cudaMemcpy(d_plaintext, plaintext, dataSize * sizeof(unsigned char), cudaMemcpyHostToDevice);
 
     // Determine the number of streams based on the number of SMs
     int numStreams = 16;  // Use full 82 will decrese performance, best at 8 and 16
@@ -304,16 +287,16 @@ int main() {
     delete[] streams;
 
     // Copy device ciphertext back to host
-    cudaMemcpy(ciphertext, d_ciphertext, (dataSize + padding) * sizeof(unsigned char), cudaMemcpyDeviceToHost);
+    cudaMemcpy(ciphertext, d_ciphertext, dataSize * sizeof(unsigned char), cudaMemcpyDeviceToHost);
 
     // Output encoded text to a file
-    write_ciphertext(ciphertext, dataSize + padding, "ciphertext.bin");
+    write_ciphertext(ciphertext, dataSize, "ciphertext.bin");
 
     // Cleanup
     cudaFree(d_plaintext);
     cudaFree(d_ciphertext);
     delete[] ciphertext;
-    delete[] paddedPlaintext; 
+    delete[] plaintext; 
 
     return 0;
 }

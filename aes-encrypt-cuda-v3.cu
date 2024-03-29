@@ -234,39 +234,25 @@ int main() {
     // Copy the IV and expanded key to constant memory
     copyToConstantMemory(iv, expandedKey);
 
-    // Calculate the number of padding bytes needed
-    size_t padding = 16 - (dataSize % 16);
-
     // Calculate the number of AES blocks needed
-    size_t numBlocks = (dataSize + padding + AES_BLOCK_SIZE - 1) / AES_BLOCK_SIZE;
+    size_t numBlocks = (dataSize + AES_BLOCK_SIZE - 1) / AES_BLOCK_SIZE;
 
     // Define the size of the grid and the blocks
     dim3 threadsPerBlock(256); // Use a reasonable number of threads per block
     dim3 blocksPerGrid((numBlocks + threadsPerBlock.x - 1) / threadsPerBlock.x);
-
-    // Create a new array of the correct size
-    unsigned char *paddedPlaintext = new unsigned char[dataSize + padding];
-
-    // Copy the plaintext into the new array
-    memcpy(paddedPlaintext, plaintext, dataSize);
-
-    // Add the padding bytes to the end of the new array
-    for (size_t i = 0; i < padding; ++i) {
-        paddedPlaintext[dataSize + i] = padding;
-    }
 
     // Allocate device memory
     cudaMalloc((void **)&d_plaintext, numBlocks * AES_BLOCK_SIZE * sizeof(unsigned char));
     cudaMalloc((void **)&d_ciphertext, numBlocks * AES_BLOCK_SIZE * sizeof(unsigned char));
 
     // Allocate memory for the ciphertext on the host
-    unsigned char *ciphertext = new unsigned char[dataSize + padding];
+    unsigned char *ciphertext = new unsigned char[dataSize];
 
     // Copy host memory to device
-    cudaMemcpy(d_plaintext, paddedPlaintext, (dataSize + padding) * sizeof(unsigned char), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_plaintext, plaintext, dataSize * sizeof(unsigned char), cudaMemcpyHostToDevice);
 
     // Set the rest of d_plaintext to zero
-    cudaMemset(d_plaintext + dataSize + padding, 0, numBlocks * AES_BLOCK_SIZE - dataSize - padding);
+    cudaMemset(d_plaintext + dataSize, 0, numBlocks * AES_BLOCK_SIZE - dataSize);
 
     // Determine the number of streams based on the number of SMs
     int numStreams = 16;  // Use full 82 will decrese performance, best at 8 and 16
@@ -309,16 +295,15 @@ int main() {
     delete[] streams;
 
     // Copy device ciphertext back to host
-    cudaMemcpy(ciphertext, d_ciphertext, (dataSize + padding) * sizeof(unsigned char), cudaMemcpyDeviceToHost);
+    cudaMemcpy(ciphertext, d_ciphertext, dataSize * sizeof(unsigned char), cudaMemcpyDeviceToHost);
 
     // Output encoded text to a file
-    write_ciphertext(ciphertext, dataSize + padding, "ciphertext.txt");
+    write_ciphertext(ciphertext, dataSize, "ciphertext.txt");
 
     // Cleanup
     cudaFree(d_plaintext);
     cudaFree(d_ciphertext);
     delete[] ciphertext;
-    delete[] paddedPlaintext; 
+    delete[] plaintext; 
     return 0;
 }
-

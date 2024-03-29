@@ -230,20 +230,6 @@ int main() {
     // Copy the IV and expanded key to constant memory
     copyToConstantMemory(iv, expandedKey);
 
-    // Calculate the number of padding bytes needed
-    size_t padding = 16 - (dataSize % 16);
-
-    // Create a new array of the correct size
-    unsigned char *paddedPlaintext = new unsigned char[dataSize + padding];
-
-    // Copy the plaintext into the new array
-    memcpy(paddedPlaintext, plaintext, dataSize);
-
-    // Add the padding bytes to the end of the new array
-    for (size_t i = 0; i < padding; ++i) {
-        paddedPlaintext[dataSize + i] = padding;
-    }
-
     // Calculate the number of AES blocks needed
     size_t numBlocks = (dataSize + AES_BLOCK_SIZE - 1) / AES_BLOCK_SIZE;
 
@@ -283,7 +269,7 @@ int main() {
         size_t actualBlocks = end - start;
 
         // Copy a chunk of the plaintext from the CPU to the GPU
-        cudaMemcpyAsync(&d_plaintext[start * AES_BLOCK_SIZE], &paddedPlaintext[start * AES_BLOCK_SIZE], actualChunkSize, cudaMemcpyHostToDevice, streams[i]);
+        cudaMemcpyAsync(&d_plaintext[start * AES_BLOCK_SIZE], &plaintext[start * AES_BLOCK_SIZE], actualChunkSize, cudaMemcpyHostToDevice, streams[i]);
 
         // Launch the kernel on the GPU
         aes_ctr_encrypt_kernel<<<actualBlocks, threadsPerBlock, 0, streams[i]>>>(d_plaintext + start * AES_BLOCK_SIZE, d_ciphertext + start * AES_BLOCK_SIZE, actualBlocks);
@@ -298,13 +284,12 @@ int main() {
     }
 
     // Output encoded text to a file
-    write_ciphertext(ciphertext, dataSize + padding, "ciphertext.bin");
+    write_ciphertext(ciphertext, dataSize, "ciphertext.bin");
 
     // Cleanup
     cudaFree(d_plaintext);
     cudaFree(d_ciphertext);
     delete[] streams;
-    delete[] paddedPlaintext;
     delete[] plaintext; 
 
     return 0;
