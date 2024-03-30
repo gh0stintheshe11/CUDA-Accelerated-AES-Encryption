@@ -166,7 +166,9 @@ __global__ void aes_ctr_encrypt_kernel(unsigned char *plaintext, unsigned char *
         memcpy(localIv, iv, AES_BLOCK_SIZE);
 
         // Increment the counter in the local IV
-        localIv[15] += tid;
+        for (int i = AES_BLOCK_SIZE - 1; i >= 0; --i) {
+            if (++localIv[i] != 0) break;  // Increment the current byte and break if there's no carry
+        }
 
         // Perform the AES encryption
         unsigned char block[AES_BLOCK_SIZE];
