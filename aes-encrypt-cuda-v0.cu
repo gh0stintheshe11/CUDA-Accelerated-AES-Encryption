@@ -185,6 +185,11 @@ __global__ void aes_ctr_encrypt_kernel(unsigned char *plaintext, unsigned char *
 
 int main() {
 
+    // Create start and stop events
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+
     // Read the key and IV
     unsigned char key[16];
     unsigned char iv[16];
@@ -220,6 +225,9 @@ int main() {
     cudaMalloc((void **)&d_plaintext, numBlocks * AES_BLOCK_SIZE * sizeof(unsigned char));
     cudaMalloc((void **)&d_ciphertext, numBlocks * AES_BLOCK_SIZE * sizeof(unsigned char));
 
+    // Record the start event
+    cudaEventRecord(start, 0);
+
     // Copy host memory to device
     cudaMemcpy(d_plaintext, plaintext, dataSize * sizeof(unsigned char), cudaMemcpyHostToDevice);
     cudaMemcpy(d_iv, iv, AES_BLOCK_SIZE * sizeof(unsigned char), cudaMemcpyHostToDevice);
@@ -232,6 +240,15 @@ int main() {
     unsigned char *ciphertext = new unsigned char[dataSize];
     cudaMemcpy(ciphertext, d_ciphertext, dataSize * sizeof(unsigned char), cudaMemcpyDeviceToHost);
 
+    // Record the stop event
+    cudaEventRecord(stop, 0);
+    cudaEventSynchronize(stop);
+
+    // Calculate the elapsed time and print
+    float elapsedTime;
+    cudaEventElapsedTime(&elapsedTime, start, stop);
+    printf("Elapsed time: %f ms\n", elapsedTime);   
+
     // Output encoded text to a file
     write_ciphertext(ciphertext, dataSize, "ciphertext.bin");
 
@@ -242,5 +259,7 @@ int main() {
     cudaFree(d_expandedKey);
     delete[] ciphertext;
     delete[] plaintext; 
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
     return 0;
 }
