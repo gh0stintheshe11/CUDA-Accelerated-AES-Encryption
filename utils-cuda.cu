@@ -70,6 +70,40 @@ void read_file_as_binary(unsigned char **data, size_t *size, const char *filenam
     fclose(file);
 }
 
+size_t preprocess(const char *filename, size_t chunkSize, unsigned char **chunks, size_t *chunkSizes) {
+    // Read the file into a buffer
+    unsigned char *buffer;
+    size_t bufferSize;
+    read_file_as_binary(&buffer, &bufferSize, filename);
+
+    // Calculate the number of chunks
+    size_t numChunks = (bufferSize + chunkSize - 1) / chunkSize;
+
+    // Allocate memory for the chunks and their sizes
+    *chunks = new unsigned char*[numChunks];
+    *chunkSizes = new size_t[numChunks];
+
+    // Split the buffer into chunks
+    for (size_t i = 0; i < numChunks; i++) {
+        // Calculate the size of the current chunk
+        size_t currentChunkSize = (i < numChunks - 1) ? chunkSize : (bufferSize % chunkSize);
+
+        // Allocate memory for the current chunk
+        (*chunks)[i] = new unsigned char[currentChunkSize];
+
+        // Copy the data from the buffer to the current chunk
+        memcpy((*chunks)[i], buffer + i * chunkSize, currentChunkSize);
+
+        // Save the size of the current chunk
+        (*chunkSizes)[i] = currentChunkSize;
+    }
+
+    // Free the buffer
+    delete[] buffer;
+
+    return numChunks;
+}
+
 // Function to write ciphertext to a file
 void write_ciphertext(const unsigned char *ciphertext, size_t size, const char *filename) {
     FILE *file = fopen(filename, "wb");

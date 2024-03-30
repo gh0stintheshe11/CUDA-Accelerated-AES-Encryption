@@ -15,4 +15,6 @@ void read_file_as_binary(unsigned char **data, size_t *size, const char *filenam
 // Function to write ciphertext to a file
 void write_ciphertext(const unsigned char *ciphertext, size_t size, const char *filename);
 
+size_t preprocess(const char *filename, size_t chunkSize, unsigned char **chunks, size_t *chunkSizes);
+
 #endif // UTILS_CUDA_H
