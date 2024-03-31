@@ -3,13 +3,16 @@
 # Check if input, key, and IV files are provided
 if [ "$#" -ne 3 ]; then
     echo "Usage: $0 <plaintext file> <key file> <IV file>"
-    exit 1
+    echo "Args not correct, using default: $0 plaintext.txt key.txt iv.txt"
+    plaintext_file='plaintext.txt'
+    key_file='key.txt'
+    iv_file='iv.txt'
+else
+    # Assign arguments to variables
+    plaintext_file=$1
+    key_file=$2
+    iv_file=$3
 fi
-
-# Assign arguments to variables
-plaintext_file=$1
-key_file=$2
-iv_file=$3
 
 # Read key and IV from files, removing any newlines
 key=$(tr -d '\n' < "$key_file")
