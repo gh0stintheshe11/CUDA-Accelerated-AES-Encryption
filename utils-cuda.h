@@ -1,21 +1,32 @@
 #ifndef UTILS_CUDA_H
 #define UTILS_CUDA_H
 
-#include <cstddef>
+#include <cuda_runtime.h>
 
+// Used by cuda v0, v1, v2, v3.
 extern unsigned char h_sbox[256];
 extern unsigned char h_rcon[11];
 
-// Print bytes in hexadecimal format
-void print_hex(unsigned char *bytes, size_t length);
+// Used by cuda v0, v1, v2.
+void KeyExpansionHost(unsigned char *key, unsigned char *expandedKey);
 
-// Function to read key or IV from a file
-void read_key_or_iv(unsigned char *data, size_t size, const char *filename);
+// Used by cuda v3.
+void KeyExpansionHost_v2(unsigned char *key, unsigned char *expandedKey);
 
-// Function to read plaintext from a file
-void read_file_as_binary(unsigned char **data, size_t *size, const char *filename);
+// Used by cuda v0, v1, v2.
+__device__ void aes_encrypt_block(unsigned char *input, unsigned char *output,
+                                  unsigned char *expandedKey,
+                                  unsigned char *d_sbox);
 
-// Function to write ciphertext to a file
-void write_ciphertext(const unsigned char *ciphertext, size_t size, const char *filename);
+// Used by cuda v3.
+__device__ void aes_encrypt_block_v2(unsigned char *input, unsigned char *output,
+                                  unsigned char *expandedKey,
+                                  unsigned char *d_sbox);
+
+// Host function to copy the IV and expanded key to constant memory
+// Used by cuda v1, v2, v3.
+void copyToConstantMemory(unsigned char *constantIv, unsigned char *iv,
+                          unsigned char *constantExpandedKey,
+                          unsigned char *expandedKey);
 
 #endif // UTILS_CUDA_H
