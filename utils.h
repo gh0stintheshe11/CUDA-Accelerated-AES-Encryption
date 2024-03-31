@@ -8,9 +8,6 @@
 #define AES_KEY_SIZE 16
 #define AES_BLOCK_SIZE 16
 
-extern unsigned char h_sbox[256];
-extern unsigned char h_rcon[11];
-
 // Print bytes in hexadecimal format.
 void print_hex(unsigned char *bytes, size_t length);
 

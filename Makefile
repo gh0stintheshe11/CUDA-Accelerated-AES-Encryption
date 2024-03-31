@@ -1,6 +1,6 @@
-# objects = aes-encrypt-cuda-v0.o utils.o utils-cuda.o
-# all: $(objects)
-# 	nvcc $(objects) -o aes-encrypt-cuda-v0
+objects = aes-encrypt-benchmark.o aes-encrypt-openssl.o aes-encrypt-cuda-v0.o aes-encrypt-cuda-v1.o aes-encrypt-cuda-v2.o aes-encrypt-cuda-v3.o utils.o utils-cuda.o
+all: $(objects)
+	nvcc $(objects) -o aes-encrypt-benchmark -lcrypto -lssl
 
 cuda_v0_objects = aes-encrypt-cuda-v0.o utils.o utils-cuda.o
 cuda_v0: $(cuda_v0_objects)
@@ -21,11 +21,17 @@ cuda_v3: $(cuda_v3_objects)
 aes-encrypt-cuda-%.o: aes-encrypt-cuda-%.cu
 	nvcc -dc $< -o $@
 
+aes-encrypt-openssl.o: aes-encrypt-openssl.cpp
+	nvcc -dc $< -o $@
+
+aes-encrypt-benchmark.o: aes-encrypt-benchmark.cpp
+	nvcc -dc $< -o $@
+
 utils-cuda.o: utils-cuda.cu
 	nvcc -dc $< -o $@
 
 utils.o: utils.cpp
-	nvcc -dc $< -o $@ -lcrypto -lssl
+	nvcc -dc $< -o $@
 
 clean:
-	rm -f *.o aes-encrypt-cuda-v0
+	rm -f *.o aes-encrypt-benchmark aes-encrypt-openssl aes-encrypt-cuda-v0 aes-encrypt-cuda-v1 aes-encrypt-cuda-v2 aes-encrypt-cuda-v3

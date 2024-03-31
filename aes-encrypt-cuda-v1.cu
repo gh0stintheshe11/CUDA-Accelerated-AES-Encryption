@@ -8,14 +8,14 @@
         - Add stream for GPU kernel -> transfer data still waste time
 */
 
-__constant__ unsigned char d_sbox[256];
-__constant__ unsigned char d_rcon[11];
+__constant__ unsigned char d_sbox_v1[256];
+__constant__ unsigned char d_rcon_v1[11];
 
 // Declare constant memory variables for the IV and expanded key
-__constant__ unsigned char constantIv[AES_BLOCK_SIZE];
-__constant__ unsigned char constantExpandedKey[176];
+__constant__ unsigned char constantIv_v1[AES_BLOCK_SIZE];
+__constant__ unsigned char constantExpandedKey_v1[176];
 
-__global__ void aes_ctr_encrypt_kernel(unsigned char *plaintext, unsigned char *ciphertext, int numBlocks) {
+__global__ void aes_ctr_encrypt_kernel_v1(unsigned char *plaintext, unsigned char *ciphertext, int numBlocks) {
     // Calculate the global thread ID
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -24,7 +24,7 @@ __global__ void aes_ctr_encrypt_kernel(unsigned char *plaintext, unsigned char *
 
     // Load the IV into shared memory
     if (threadIdx.x < AES_BLOCK_SIZE) {
-        sharedIv[threadIdx.x] = constantIv[threadIdx.x];
+        sharedIv[threadIdx.x] = constantIv_v1[threadIdx.x];
     }
 
     // Synchronize to make sure the data is loaded before proceeding
@@ -41,7 +41,7 @@ __global__ void aes_ctr_encrypt_kernel(unsigned char *plaintext, unsigned char *
 
         // Perform the AES encryption
         unsigned char block[AES_BLOCK_SIZE];
-        aes_encrypt_block(localIv, block, constantExpandedKey, d_sbox);  // Use constantExpandedKey here
+        aes_encrypt_block(localIv, block, constantExpandedKey_v1, d_sbox_v1);  // Use constantExpandedKey_v1 here
 
         // XOR the plaintext with the encrypted block
         for (int i = 0; i < AES_BLOCK_SIZE; ++i) {
@@ -58,15 +58,15 @@ double aes_encrypt_cuda_v1(unsigned char *plaintext, size_t dataSize,
   unsigned char *d_plaintext, *d_ciphertext;
 
   // Copy S-box and rcon to device constant memory
-  cudaMemcpyToSymbol(d_sbox, h_sbox, sizeof(h_sbox));
-  cudaMemcpyToSymbol(d_rcon, h_rcon, sizeof(h_rcon));
+  cudaMemcpyToSymbol(d_sbox_v1, h_sbox, sizeof(h_sbox));
+  cudaMemcpyToSymbol(d_rcon_v1, h_rcon, sizeof(h_rcon));
 
   // Call the host function to expand the key
   unsigned char expandedKey[176];
   KeyExpansionHost(key, expandedKey);
 
   // Copy the IV and expanded key to constant memory
-  copyToConstantMemory(constantIv, iv, constantExpandedKey, expandedKey);
+  copyToConstantMemory(constantIv_v1, iv, constantExpandedKey_v1, expandedKey);
 
   // Calculate the number of AES blocks needed
   size_t numBlocks = (dataSize + AES_BLOCK_SIZE - 1) / AES_BLOCK_SIZE;
@@ -118,7 +118,7 @@ double aes_encrypt_cuda_v1(unsigned char *plaintext, size_t dataSize,
       dim3 threads(AES_BLOCK_SIZE);
 
       // Launch the kernel in this stream
-      aes_ctr_encrypt_kernel<<<blocks, threads, 0, streams[i]>>>(
+      aes_ctr_encrypt_kernel_v1<<<blocks, threads, 0, streams[i]>>>(
           d_plaintext + startBlock * AES_BLOCK_SIZE,
           d_ciphertext + startBlock * AES_BLOCK_SIZE, endBlock - startBlock);
     }
@@ -147,27 +147,28 @@ double aes_encrypt_cuda_v1(unsigned char *plaintext, size_t dataSize,
   return end_time - start_time;
 }
 
-int main() {
-  // Read the key and IV
-  unsigned char key[16];
-  unsigned char iv[16];
-  read_key_or_iv(key, sizeof(key), "key.txt");
-  read_key_or_iv(iv, sizeof(iv), "iv.txt");
+// Comment below if run in benchmarks.
+// int main() {
+//   // Read the key and IV
+//   unsigned char key[16];
+//   unsigned char iv[16];
+//   read_key_or_iv(key, sizeof(key), "key.txt");
+//   read_key_or_iv(iv, sizeof(iv), "iv.txt");
 
-  // Determine the size of the file and read the plaintext
-  size_t dataSize;
-  unsigned char *plaintext;
-  read_file_as_binary(&plaintext, &dataSize, "plaintext.txt");
+//   // Determine the size of the file and read the plaintext
+//   size_t dataSize;
+//   unsigned char *plaintext;
+//   read_file_as_binary(&plaintext, &dataSize, "plaintext.txt");
 
-  // Allocate memory, transfer data and run kernel.
-  unsigned char *ciphertext = new unsigned char[dataSize];
-  aes_encrypt_cuda_v1(plaintext, dataSize, key, iv, ciphertext);
+//   // Allocate memory, transfer data and run kernel.
+//   unsigned char *ciphertext = new unsigned char[dataSize];
+//   aes_encrypt_cuda_v1(plaintext, dataSize, key, iv, ciphertext);
 
-  // Output encoded text to a file
-  write_ciphertext(ciphertext, dataSize, "ciphertext.txt");
+//   // Output encoded text to a file
+//   write_ciphertext(ciphertext, dataSize, "ciphertext.txt");
 
-  // Cleanup
-  delete[] ciphertext;
-  delete[] plaintext;
-  return 0;
-}
+//   // Cleanup
+//   delete[] ciphertext;
+//   delete[] plaintext;
+//   return 0;
+// }

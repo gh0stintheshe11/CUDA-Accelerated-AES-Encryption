@@ -34,6 +34,7 @@ double aes_encrypt_openssl(unsigned char *plaintext, int plaintext_len,
   return end_time - start_time;
 }
 
+// Comment below if run in benchmarks.
 // int main() {
 //   // Read the key and IV.
 //   unsigned char key[16];
