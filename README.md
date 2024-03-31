@@ -1,9 +1,10 @@
 # ECE1782 Project: CUDA Accelerated AES Encryption
 
 ## Build and run the benchmark ##
-Use a custom plaintext file:
+Use a big plaintext file:
 ```
-make && ./aes-encrypt-benchmark <plaintext file>
+wget https://norvig.com/big.txt
+make && ./aes-encrypt-benchmark big.txt
 ```
 or use the default plaintext.txt:
 ```
