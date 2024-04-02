@@ -1,14 +1,20 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <iostream>
 #include <cuda_runtime.h>
 #include <string.h>
+#include <vector>
+#include <thread>
+#include <queue>
+#include <mutex>
+#include <chrono>
+#include <condition_variable>
 #include "utils-cuda.h"
 
 /*
-    Memory targeted optimizations:
-        - Add shared memory for data with in SM -> slightly improve kernel throughput
-        - Add constant memory for expanded key and IV -> slightly improve kernel throughput
-        - Add stream for GPU kernel -> transfer data still waste time
+    DEAD END
+    CPU multithreading + GPU stream version
+    why: guessing a big transfer is better than multiple small transfer
 */
 
 #define AES_KEY_SIZE 16
@@ -186,12 +192,72 @@ __global__ void aes_ctr_encrypt_kernel(unsigned char *plaintext, unsigned char *
     }
 }
 
-int main() {
+void processChunk(size_t i, unsigned char** chunks, size_t* chunkSizes, unsigned char* expandedKey, unsigned char* iv, cudaStream_t* streams, unsigned char** d_chunks, unsigned char** d_ciphertexts) {
+    cudaStreamCreate(&streams[i]);
 
-    // Create start and stop events
-    cudaEvent_t start, stop;
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
+    // Allocate memory on the GPU
+    cudaMalloc(&d_chunks[i], chunkSizes[i]);
+    cudaMalloc(&d_ciphertexts[i], chunkSizes[i]);
+
+    // Copy the chunk to the GPU
+    cudaMemcpyAsync(d_chunks[i], chunks[i], chunkSizes[i], cudaMemcpyHostToDevice, streams[i]);
+
+    // Launch the kernel
+    dim3 numThreadsPerBlock(256);
+    dim3 numBlocksPerGrid(32);
+    aes_ctr_encrypt_kernel<<<numBlocksPerGrid, numThreadsPerBlock, 0, streams[i]>>>(d_chunks[i], d_ciphertexts[i], expandedKey, iv, chunkSizes[i] / AES_BLOCK_SIZE);
+
+    // Copy the processed data back to the CPU
+    cudaMemcpyAsync(chunks[i], d_ciphertexts[i], chunkSizes[i], cudaMemcpyDeviceToHost, streams[i]);
+
+    // Wait for the copy to finish
+    cudaStreamSynchronize(streams[i]);
+
+    // After the copy is finished, write the chunk to the file
+    write_encrypted_multithreading(chunks[i], chunkSizes[i], "encrypted.bin");
+
+    cudaStreamDestroy(streams[i]);
+    cudaFree(d_chunks[i]);
+    cudaFree(d_ciphertexts[i]);
+}
+
+std::queue<size_t> workQueue;
+std::mutex queueMutex;
+std::condition_variable queueCondVar;
+// Define the variable at a global scope
+bool allChunksProcessed = false;
+
+void workerThread(unsigned char** chunks, size_t* chunkSizes, unsigned char* expandedKey, unsigned char* iv, cudaStream_t* streams, unsigned char** d_chunks, unsigned char** d_ciphertexts) {
+    while (true) {
+        size_t i;
+
+        // Get a chunk from the queue
+        {
+            std::unique_lock<std::mutex> lock(queueMutex);
+
+            while (workQueue.empty()) {
+                if (allChunksProcessed) return;  // Break the loop if all chunks have been processed
+                queueCondVar.wait(lock);
+            }
+
+            i = workQueue.front();
+            workQueue.pop();
+        }
+
+        // Process the chunk
+        processChunk(i, chunks, chunkSizes, expandedKey, iv, streams, d_chunks, d_ciphertexts);
+    }
+}
+
+int main(int argc, char* argv[]) {
+    // Check if filename is provided
+    if (argc < 2) {
+        printf("Usage: %s <filename>\n", argv[0]);
+        return 1;
+    }
+
+    // Get the start time
+    auto start = std::chrono::high_resolution_clock::now();
 
     // Read the key and IV
     unsigned char key[16];
@@ -199,70 +265,62 @@ int main() {
     read_key_or_iv(key, sizeof(key), "key.txt");
     read_key_or_iv(iv, sizeof(iv), "iv.txt");
 
-    // Determine the size of the file and read the plaintext
-    size_t dataSize;
-    unsigned char* plaintext;
-    read_file_as_binary(&plaintext, &dataSize, "plaintext.txt"); 
-
-    unsigned char *d_plaintext, *d_ciphertext, *d_iv;
-    unsigned char *d_expandedKey;
-
-    // Copy S-box and rcon to device constant memory
-    cudaMemcpyToSymbol(d_sbox, h_sbox, sizeof(h_sbox));
-    cudaMemcpyToSymbol(d_rcon, h_rcon, sizeof(h_rcon));
-
     // Call the host function to expand the key
     unsigned char expandedKey[176];
     KeyExpansionHost(key, expandedKey);
 
-    // Calculate the number of AES blocks needed
-    size_t numBlocks = (dataSize + AES_BLOCK_SIZE - 1) / AES_BLOCK_SIZE;
+    // Preprocess the data into chunks
+    unsigned char** chunks = NULL;
+    size_t* chunkSizes = NULL;
+    size_t numChunks = preprocess(argv[1], AES_BLOCK_SIZE, &chunks, &chunkSizes);
 
-    // Define the size of the grid and the blocks
-    dim3 threadsPerBlock(256); // Use a reasonable number of threads per block
-    dim3 blocksPerGrid((numBlocks + threadsPerBlock.x - 1) / threadsPerBlock.x);
+    // Create a pool of CUDA streams
+    cudaStream_t* streams = new cudaStream_t[numChunks];
+    unsigned char** d_chunks = new unsigned char*[numChunks];
+    unsigned char** d_ciphertexts = new unsigned char*[numChunks];
 
-    // Allocate device memory
-    cudaMalloc((void **)&d_iv, AES_BLOCK_SIZE * sizeof(unsigned char));
-    cudaMalloc((void **)&d_expandedKey, 176); 
-    cudaMalloc((void **)&d_plaintext, numBlocks * AES_BLOCK_SIZE * sizeof(unsigned char));
-    cudaMalloc((void **)&d_ciphertext, numBlocks * AES_BLOCK_SIZE * sizeof(unsigned char));
+    // Create a pool of worker threads
+    std::thread workerThreads[8];
+    for (int i = 0; i < 8; i++) {
+        workerThreads[i] = std::thread(workerThread, chunks, chunkSizes, expandedKey, iv, streams, d_chunks, d_ciphertexts);
+    }
 
-    // Record the start event
-    cudaEventRecord(start, 0);
+    // Add the chunks to the work queue
+    for (size_t i = 0; i < numChunks; i++) {
+        {
+            std::lock_guard<std::mutex> lock(queueMutex);
+            workQueue.push(i);
+        }
+        
+        queueCondVar.notify_one();
+    }
 
-    // Copy host memory to device
-    cudaMemcpy(d_plaintext, plaintext, dataSize * sizeof(unsigned char), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_iv, iv, AES_BLOCK_SIZE * sizeof(unsigned char), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_expandedKey, expandedKey, 176, cudaMemcpyHostToDevice); 
+    // Set allChunksProcessed to true after all chunks have been added to the work queue
+    {
+        std::lock_guard<std::mutex> lock(queueMutex);
+        allChunksProcessed = true;
+    }
 
-    // Launch AES-CTR encryption kernel
-    aes_ctr_encrypt_kernel<<<blocksPerGrid, threadsPerBlock>>>(d_plaintext, d_ciphertext, d_expandedKey, d_iv, numBlocks);
+    // Notify all waiting threads that all chunks have been processed
+    queueCondVar.notify_all();
 
-    // Copy device ciphertext back to host
-    unsigned char *ciphertext = new unsigned char[dataSize];
-    cudaMemcpy(ciphertext, d_ciphertext, dataSize * sizeof(unsigned char), cudaMemcpyDeviceToHost);
+    // Wait for all threads to finish
+    for (int i = 0; i < 8; i++) {
+        workerThreads[i].join();
+    }
 
-    // Record the stop event
-    cudaEventRecord(stop, 0);
-    cudaEventSynchronize(stop);
+    delete[] chunks;
+    delete[] chunkSizes;
+    delete[] streams;
+    delete[] d_chunks;
+    delete[] d_ciphertexts;
+
+    // Get the stop time
+    auto stop = std::chrono::high_resolution_clock::now();
 
     // Calculate the elapsed time and print
-    float elapsedTime;
-    cudaEventElapsedTime(&elapsedTime, start, stop);
-    printf("Elapsed time: %f ms\n", elapsedTime);   
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(stop - start);
+    std::cout << "Elapsed time: " << duration.count() << " ms\n";
 
-    // Output encoded text to a file
-    write_ciphertext(ciphertext, dataSize, "ciphertext.bin");
-
-    // Cleanup
-    cudaFree(d_plaintext);
-    cudaFree(d_ciphertext);
-    cudaFree(d_iv);
-    cudaFree(d_expandedKey);
-    delete[] ciphertext;
-    delete[] plaintext; 
-    cudaEventDestroy(start);
-    cudaEventDestroy(stop);
     return 0;
 }
