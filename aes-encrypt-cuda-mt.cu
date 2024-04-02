@@ -13,8 +13,8 @@
 
 /*
     DEAD END
-    CPU multithreading + GPU stream version
-    why: guessing a big transfer is better than multiple small transfer
+    CPU multithreading (MT) + GPU stream version
+    too slow: guessing a big transfer is better than multiple small transfer
 */
 
 #define AES_KEY_SIZE 16
@@ -164,30 +164,43 @@ __device__ void aes_encrypt_block(unsigned char *input, unsigned char *output, u
     }
 }
 
-__global__ void aes_ctr_encrypt_kernel(unsigned char *plaintext, unsigned char *ciphertext, unsigned char *expandedKey, unsigned char *iv, int numBlocks) {
-    // Calculate the global thread ID
+__device__ void increment_counter(unsigned char *counter, int increment) {
+    int carry = increment;
+    for (int i = AES_BLOCK_SIZE - 1; i >= 0; i--) {
+        int sum = counter[i] + carry;
+        counter[i] = sum & 0xFF;
+        carry = sum >> 8;
+        if (carry == 0) {
+            break;
+        }
+    }
+}
+
+__global__ void aes_ctr_encrypt_kernel(unsigned char *plaintext, unsigned char *ciphertext, unsigned char *expandedKey, unsigned char *iv, int numBlocks, int dataSize) {
+    // Calculate the global block ID
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
 
-    // Check if the thread is within the number of blocks
+    // Check if the block is within the number of blocks
     if (tid < numBlocks) {
-        // Copy the IV to a local array
-        unsigned char localIv[AES_BLOCK_SIZE];
-        memcpy(localIv, iv, AES_BLOCK_SIZE);
+        // Create a counter array
+        unsigned char counter[AES_BLOCK_SIZE];
 
-        // Increment the counter in the local IV
-        for (int i = AES_BLOCK_SIZE - 1; i >= 0; --i) {
-            unsigned char old = localIv[i];
-            localIv[i] += tid;
-            if (localIv[i] >= old) break;  // Break if there's no carry
-        }
+        // Copy the IV to the counter
+        memcpy(counter, iv, AES_BLOCK_SIZE);
 
-        // Perform the AES encryption
-        unsigned char block[AES_BLOCK_SIZE];
-        aes_encrypt_block(localIv, block, expandedKey);
+        // Increment the counter by the block ID
+        increment_counter(counter, tid);
 
-        // XOR the plaintext with the encrypted block
-        for (int i = 0; i < AES_BLOCK_SIZE; ++i) {
-            ciphertext[tid * AES_BLOCK_SIZE + i] = plaintext[tid * AES_BLOCK_SIZE + i] ^ block[i];
+        // Calculate the block size
+        int blockSize = (tid == numBlocks - 1 && dataSize % AES_BLOCK_SIZE != 0) ? dataSize % AES_BLOCK_SIZE : AES_BLOCK_SIZE;
+
+        // Encrypt the counter to get the ciphertext block
+        unsigned char ciphertextBlock[AES_BLOCK_SIZE];
+        aes_encrypt_block(counter, ciphertextBlock, expandedKey);
+
+        // XOR the plaintext with the ciphertext block
+        for (int i = 0; i < blockSize; ++i) {
+            ciphertext[tid * AES_BLOCK_SIZE + i] = plaintext[tid * AES_BLOCK_SIZE + i] ^ ciphertextBlock[i];
         }
     }
 }
@@ -205,7 +218,7 @@ void processChunk(size_t i, unsigned char** chunks, size_t* chunkSizes, unsigned
     // Launch the kernel
     dim3 numThreadsPerBlock(256);
     dim3 numBlocksPerGrid(32);
-    aes_ctr_encrypt_kernel<<<numBlocksPerGrid, numThreadsPerBlock, 0, streams[i]>>>(d_chunks[i], d_ciphertexts[i], expandedKey, iv, chunkSizes[i] / AES_BLOCK_SIZE);
+    aes_ctr_encrypt_kernel<<<blocksPerGrid, threadsPerBlock>>>(d_plaintext, d_ciphertext, d_expandedKey, d_iv, numBlocks, dataSize);
 
     // Copy the processed data back to the CPU
     cudaMemcpyAsync(chunks[i], d_ciphertexts[i], chunkSizes[i], cudaMemcpyDeviceToHost, streams[i]);
