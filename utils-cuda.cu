@@ -120,7 +120,7 @@ void write_encrypted(const unsigned char *ciphertext, size_t size, const char *f
 
 std::mutex fileMutex;
 void write_encrypted_multithreading(const unsigned char *ciphertext, size_t size, const char *filename) {
-    fileMutex.lock();
+    std::lock_guard<std::mutex> lock(fileMutex);
 
     // Open the file in append mode
     FILE *file = fopen(filename, "ab");
@@ -130,8 +130,11 @@ void write_encrypted_multithreading(const unsigned char *ciphertext, size_t size
     }
 
     // Write the data to the file
-    fwrite(ciphertext, 1, size, file);
-    fclose(file);
+    size_t written = fwrite(ciphertext, 1, size, file);
+    if (written != size) {
+        fprintf(stderr, "Failed to write to file: %s\n", filename);
+        exit(1);
+    }
 
-    fileMutex.unlock();
+    fclose(file);
 }
