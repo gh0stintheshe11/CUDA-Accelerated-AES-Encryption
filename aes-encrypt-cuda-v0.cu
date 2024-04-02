@@ -157,27 +157,32 @@ __device__ void aes_encrypt_block(unsigned char *input, unsigned char *output, u
     }
 }
 
+__device__ void increment_counter(unsigned char *counter, int increment) {
+    int carry = increment;
+    for (int i = AES_BLOCK_SIZE - 1; i >= 0; i--) {
+        int sum = counter[i] + carry;
+        counter[i] = sum & 0xFF;
+        carry = sum >> 8;
+        if (carry == 0) {
+            break;
+        }
+    }
+}
+
 __global__ void aes_ctr_encrypt_kernel(unsigned char *plaintext, unsigned char *ciphertext, unsigned char *expandedKey, unsigned char *iv, int numBlocks, int dataSize) {
     // Calculate the global block ID
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
 
     // Check if the block is within the number of blocks
     if (tid < numBlocks) {
-        // Copy the IV to the counter
+        // Create a counter array
         unsigned char counter[AES_BLOCK_SIZE];
-        for (int i = 0; i < AES_BLOCK_SIZE; i++) {
-            counter[i] = iv[i];
-        }
 
-        // Increment the counter by the thread ID
-        for (int i = AES_BLOCK_SIZE - 1; i >= 0; i--) {
-            unsigned int sum = counter[i] + (tid % 256);
-            counter[i] = sum & 0xFF;
-            tid /= 256;
-            if (tid == 0) {
-                break;
-            }
-        }
+        // Copy the IV to the counter
+        memcpy(counter, iv, AES_BLOCK_SIZE);
+
+        // Increment the counter by the block ID
+        increment_counter(counter, tid);
 
         // Calculate the block size
         int blockSize = (tid == numBlocks - 1 && dataSize % AES_BLOCK_SIZE != 0) ? dataSize % AES_BLOCK_SIZE : AES_BLOCK_SIZE;
