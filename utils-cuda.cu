@@ -1,5 +1,7 @@
 #include "utils-cuda.h"
-#include "utils.h"
+#include <cstdio>
+#include <cstdlib>
+#include <mutex>
 
 unsigned char h_sbox[256] = {
     0x63, 0x7C, 0x77, 0x7B, 0xF2, 0x6B, 0x6F, 0xC5, 0x30, 0x01, 0x67, 0x2B, 0xFE, 0xD7, 0xAB, 0x76,
@@ -26,316 +28,113 @@ unsigned char h_rcon[11] = {
     0x20, 0x40, 0x80, 0x1B, 0x36
 };
 
-// Used by cuda v0, v1, v2.
-__device__ unsigned char mul(unsigned char a, unsigned char b) {
-  unsigned char p = 0;
-  unsigned char high_bit_mask = 0x80;
-  unsigned char high_bit = 0;
-  unsigned char modulo = 0x1B; /* x^8 + x^4 + x^3 + x + 1 */
+// Function to read key or IV from a file
+void read_key_or_iv(unsigned char *data, size_t size, const char *filename) {
+    FILE *file = fopen(filename, "r");
+    if (file == NULL) {
+        fprintf(stderr, "Cannot open file: %s\n", filename);
+        exit(1);
+    }
+    for (size_t i = 0; i < size; i++) {
+        char buffer[3];
+        if (fread(buffer, 1, 2, file) != 2) {
+            fprintf(stderr, "Cannot read value from file: %s\n", filename);
+            exit(1);
+        }
+        buffer[2] = '\0'; // Null-terminate the buffer
+        data[i] = (unsigned char)strtol(buffer, NULL, 16); // Convert the buffer to a hexadecimal value
+    }
+    fclose(file);
+}
 
-  for (int i = 0; i < 8; i++) {
-    if (b & 1) {
-      p ^= a;
+void read_file_as_binary(unsigned char **data, size_t *size, const char *filename) {
+    FILE *file = fopen(filename, "rb");
+    if (file == NULL) {
+        fprintf(stderr, "Cannot open file: %s\n", filename);
+        exit(1);
     }
 
-    high_bit = a & high_bit_mask;
-    a <<= 1;
-    if (high_bit) {
-      a ^= modulo;
-    }
-    b >>= 1;
-  }
+    // Determine the file size
+    fseek(file, 0, SEEK_END);
+    *size = ftell(file);
+    fseek(file, 0, SEEK_SET);
 
-  return p;
-}
+    // Allocate the buffer
+    *data = new unsigned char[*size];
 
-// Used by cuda v0, v1, v2.
-void KeyExpansionHost(unsigned char *key, unsigned char *expandedKey) {
-  int i = 0;
-  while (i < 4) {
-    for (int j = 0; j < 4; j++) {
-      expandedKey[i * 4 + j] = key[i * 4 + j];
-    }
-    i++;
-  }
-
-  int rconIteration = 1;
-  unsigned char temp[4];
-
-  while (i < 44) {
-    for (int j = 0; j < 4; j++) {
-      temp[j] = expandedKey[(i - 1) * 4 + j];
+    size_t bytesRead = fread(*data, 1, *size, file);
+    if (bytesRead != *size) {
+        fprintf(stderr, "Failed to read the entire file: %s\n", filename);
+        exit(1);
     }
 
-    if (i % 4 == 0) {
-      unsigned char k = temp[0];
-      for (int j = 0; j < 3; j++) {
-        temp[j] = temp[j + 1];
-      }
-      temp[3] = k;
+    fclose(file);
+}
 
-      for (int j = 0; j < 4; j++) {
-        // Use the host-accessible arrays
-        temp[j] = h_sbox[temp[j]] ^ (j == 0 ? h_rcon[rconIteration++] : 0);
-      }
+size_t preprocess(const char *filename, size_t chunkSize, unsigned char ***chunks, size_t **chunkSizes) {
+    // Read the file into a buffer
+    unsigned char *buffer;
+    size_t bufferSize;
+    read_file_as_binary(&buffer, &bufferSize, filename);
+
+    // Calculate the number of chunks
+    size_t numChunks = (bufferSize + chunkSize - 1) / chunkSize;
+
+    // Allocate memory for the chunks and their sizes
+    *chunks = new unsigned char*[numChunks];
+    *chunkSizes = new size_t[numChunks];
+
+    // Split the buffer into chunks
+    for (size_t i = 0; i < numChunks; i++) {
+        // Calculate the size of the current chunk
+        size_t currentChunkSize = (i < numChunks - 1) ? chunkSize : (bufferSize % chunkSize);
+
+        // Allocate memory for the current chunk
+        (*chunks)[i] = new unsigned char[currentChunkSize];
+
+        // Copy the data from the buffer to the current chunk
+        memcpy((*chunks)[i], buffer + i * chunkSize, currentChunkSize);
+
+        // Save the size of the current chunk
+        (*chunkSizes)[i] = currentChunkSize;
     }
 
-    for (int j = 0; j < 4; j++) {
-      expandedKey[i * 4 + j] = expandedKey[(i - 4) * 4 + j] ^ temp[j];
+    // Free the buffer
+    delete[] buffer;
+
+    return numChunks;
+}
+
+void write_encrypted(const unsigned char *ciphertext, size_t size, const char *filename) {
+    FILE *file = fopen(filename, "wb");
+    if (file == NULL) {
+        fprintf(stderr, "Cannot open file: %s\n", filename);
+        exit(1);
     }
-    i++;
-  }
+    if (fwrite(ciphertext, 1, size, file) != size) {
+        fprintf(stderr, "Error writing to file: %s\n", filename);
+        exit(1);
+    }
+    fclose(file);
 }
 
-// Used by cuda v0, v1, v2, v3.
-__device__ void SubBytes(unsigned char *state, unsigned char *d_sbox) {
-  for (int i = 0; i < 16; ++i) {
-    state[i] = d_sbox[state[i]];
-  }
-}
+std::mutex fileMutex;
+void write_encrypted_multithreading(const unsigned char *ciphertext, size_t size, const char *filename) {
+    std::lock_guard<std::mutex> lock(fileMutex);
 
-// Used by cuda v0, v1, v2.
-__device__ void ShiftRows(unsigned char *state) {
-  unsigned char tmp[16];
-
-  /* Column 1 */
-  tmp[0] = state[0];
-  tmp[1] = state[5];
-  tmp[2] = state[10];
-  tmp[3] = state[15];
-  /* Column 2 */
-  tmp[4] = state[4];
-  tmp[5] = state[9];
-  tmp[6] = state[14];
-  tmp[7] = state[3];
-  /* Column 3 */
-  tmp[8] = state[8];
-  tmp[9] = state[13];
-  tmp[10] = state[2];
-  tmp[11] = state[7];
-  /* Column 4 */
-  tmp[12] = state[12];
-  tmp[13] = state[1];
-  tmp[14] = state[6];
-  tmp[15] = state[11];
-
-  memcpy(state, tmp, 16);
-}
-
-// Used by cuda v0, v1, v2.
-__device__ void MixColumns(unsigned char *state) {
-  unsigned char tmp[16];
-
-  for (int i = 0; i < 4; ++i) {
-    tmp[i * 4] =
-        (unsigned char)(mul(0x02, state[i * 4]) ^ mul(0x03, state[i * 4 + 1]) ^
-                        state[i * 4 + 2] ^ state[i * 4 + 3]);
-    tmp[i * 4 + 1] =
-        (unsigned char)(state[i * 4] ^ mul(0x02, state[i * 4 + 1]) ^
-                        mul(0x03, state[i * 4 + 2]) ^ state[i * 4 + 3]);
-    tmp[i * 4 + 2] = (unsigned char)(state[i * 4] ^ state[i * 4 + 1] ^
-                                     mul(0x02, state[i * 4 + 2]) ^
-                                     mul(0x03, state[i * 4 + 3]));
-    tmp[i * 4 + 3] =
-        (unsigned char)(mul(0x03, state[i * 4]) ^ state[i * 4 + 1] ^
-                        state[i * 4 + 2] ^ mul(0x02, state[i * 4 + 3]));
-  }
-
-  memcpy(state, tmp, 16);
-}
-
-// Used by cuda v0, v1, v2, v3.
-__device__ void AddRoundKey(unsigned char *state,
-                            const unsigned char *roundKey) {
-  for (int i = 0; i < 16; ++i) {
-    state[i] ^= roundKey[i];
-  }
-}
-
-// Used by cuda v0, v1, v2.
-__device__ void aes_encrypt_block(unsigned char *input, unsigned char *output,
-                                  unsigned char *expandedKey,
-                                  unsigned char *d_sbox) {
-  unsigned char state[16];
-
-  // Copy the input to the state array
-  for (int i = 0; i < 16; ++i) {
-    state[i] = input[i];
-  }
-
-  // Add the round key to the state
-  AddRoundKey(state, expandedKey);
-
-  // Perform 9 rounds of substitutions, shifts, mixes, and round key additions
-  for (int round = 1; round < 10; ++round) {
-    SubBytes(state, d_sbox);
-    ShiftRows(state);
-    MixColumns(state);
-    AddRoundKey(state, expandedKey + round * 16);
-  }
-
-  // Perform the final round (without MixColumns)
-  SubBytes(state, d_sbox);
-  ShiftRows(state);
-  AddRoundKey(state, expandedKey + 10 * 16);
-
-  // Copy the state to the output
-  for (int i = 0; i < 16; ++i) {
-    output[i] = state[i];
-  }
-}
-
-// Host function to copy the IV and expanded key to constant memory
-// Used by cuda v1, v2, v3.
-void copyToConstantMemory(unsigned char *constantIv, unsigned char *iv,
-                          unsigned char *constantExpandedKey,
-                          unsigned char *expandedKey) {
-  cudaMemcpyToSymbol(constantIv, iv, AES_BLOCK_SIZE);
-  cudaMemcpyToSymbol(constantExpandedKey, expandedKey, 176);
-}
-
-// Used by cuda v3.
-__device__ unsigned char mul_v2(unsigned char a, unsigned char b) {
-  unsigned char p = 0;
-  unsigned char high_bit_mask = 0x80;
-  unsigned char high_bit = 0;
-  unsigned char modulo = 0x1B; /* x^8 + x^4 + x^3 + x + 1 */
-
-  for (int i = 0; i < 8; i++) {
-    if (b & 1) {
-      p ^= a;
+    // Open the file in append mode
+    FILE *file = fopen(filename, "ab");
+    if (file == NULL) {
+        fprintf(stderr, "Cannot open file: %s\n", filename);
+        exit(1);
     }
 
-    high_bit = a & high_bit_mask;
-    a = __byte_perm(a, 0, 0x1011); // shift left
-    if (high_bit) {
-      a ^= modulo;
-    }
-    b >>= 1;
-  }
-
-  return p;
-}
-
-// Used by cuda v3.
-void KeyExpansionHost_v2(unsigned char *key, unsigned char *expandedKey) {
-  int i = 0;
-  while (i < 4) {
-    cudaMemcpy(&expandedKey[i * 4], &key[i * 4], 4 * sizeof(unsigned char),
-               cudaMemcpyHostToHost);
-    i++;
-  }
-
-  int rconIteration = 1;
-  unsigned char temp[4];
-
-  while (i < 44) {
-    cudaMemcpy(temp, &expandedKey[(i - 1) * 4], 4 * sizeof(unsigned char),
-               cudaMemcpyHostToHost);
-
-    if (i % 4 == 0) {
-      unsigned char k = temp[0];
-      for (int j = 0; j < 3; j++) {
-        temp[j] = temp[j + 1];
-      }
-      temp[3] = k;
-
-      for (int j = 0; j < 4; j++) {
-        // Use the host-accessible arrays
-        temp[j] = h_sbox[temp[j]] ^ (j == 0 ? h_rcon[rconIteration++] : 0);
-      }
+    // Write the data to the file
+    size_t written = fwrite(ciphertext, 1, size, file);
+    if (written != size) {
+        fprintf(stderr, "Failed to write to file: %s\n", filename);
+        exit(1);
     }
 
-    for (int j = 0; j < 4; j++) {
-      expandedKey[i * 4 + j] = expandedKey[(i - 4) * 4 + j] ^ temp[j];
-    }
-    i++;
-  }
-}
-
-// Used by cuda v3.
-__device__ void ShiftRows_v2(unsigned char *state) {
-  uint4 *state_as_int4 = reinterpret_cast<uint4 *>(state);
-  uint4 state0 = state_as_int4[0];
-  uint4 state1 = state_as_int4[1];
-  uint4 state2 = state_as_int4[2];
-  uint4 state3 = state_as_int4[3];
-
-  state_as_int4[0] = make_uint4(__byte_perm(state0.x, state1.x, 0x3210),
-                                __byte_perm(state0.y, state1.y, 0x3210),
-                                __byte_perm(state0.z, state1.z, 0x3210),
-                                __byte_perm(state0.w, state1.w, 0x3210));
-
-  state_as_int4[1] = make_uint4(__byte_perm(state1.x, state2.x, 0x3210),
-                                __byte_perm(state1.y, state2.y, 0x3210),
-                                __byte_perm(state1.z, state2.z, 0x3210),
-                                __byte_perm(state1.w, state2.w, 0x3210));
-
-  state_as_int4[2] = make_uint4(__byte_perm(state2.x, state3.x, 0x3210),
-                                __byte_perm(state2.y, state3.y, 0x3210),
-                                __byte_perm(state2.z, state3.z, 0x3210),
-                                __byte_perm(state2.w, state3.w, 0x3210));
-
-  state_as_int4[3] = make_uint4(__byte_perm(state3.x, state0.x, 0x3210),
-                                __byte_perm(state3.y, state0.y, 0x3210),
-                                __byte_perm(state3.z, state0.z, 0x3210),
-                                __byte_perm(state3.w, state0.w, 0x3210));
-}
-
-// Used by cuda v3.
-__device__ void MixColumns_v2(unsigned char *state) {
-  unsigned char tmp[16];
-
-  for (int i = 0; i < 4; ++i) {
-    tmp[i * 4] = (unsigned char)(mul_v2(0x02, state[i * 4]) ^
-                                 mul_v2(0x03, state[i * 4 + 1]) ^
-                                 state[i * 4 + 2] ^ state[i * 4 + 3]);
-    tmp[i * 4 + 1] =
-        (unsigned char)(state[i * 4] ^ mul_v2(0x02, state[i * 4 + 1]) ^
-                        mul_v2(0x03, state[i * 4 + 2]) ^ state[i * 4 + 3]);
-    tmp[i * 4 + 2] = (unsigned char)(state[i * 4] ^ state[i * 4 + 1] ^
-                                     mul_v2(0x02, state[i * 4 + 2]) ^
-                                     mul_v2(0x03, state[i * 4 + 3]));
-    tmp[i * 4 + 3] =
-        (unsigned char)(mul_v2(0x03, state[i * 4]) ^ state[i * 4 + 1] ^
-                        state[i * 4 + 2] ^ mul_v2(0x02, state[i * 4 + 3]));
-  }
-
-  memcpy(state, tmp, 16);
-}
-
-// Used by cuda v3.
-__device__ void aes_encrypt_block_v2(unsigned char *input,
-                                     unsigned char *output,
-                                     unsigned char *expandedKey,
-                                     unsigned char *d_sbox) {
-  unsigned char state[16];
-
-// Copy the input to the state array
-#pragma unroll
-  for (int i = 0; i < 16; ++i) {
-    state[i] = input[i];
-  }
-
-  // Add the round key to the state
-  AddRoundKey(state, expandedKey);
-
-  // Perform 9 rounds of substitutions, shifts, mixes, and round key additions
-  for (int round = 1; round < 10; ++round) {
-    SubBytes(state, d_sbox);
-    ShiftRows(state);
-    MixColumns(state);
-    AddRoundKey(state, expandedKey + round * 16);
-  }
-
-  // Perform the final round (without MixColumns)
-  SubBytes(state, d_sbox);
-  ShiftRows(state);
-  AddRoundKey(state, expandedKey + 10 * 16);
-
-// Copy the state to the output
-#pragma unroll
-  for (int i = 0; i < 16; ++i) {
-    output[i] = state[i];
-  }
+    fclose(file);
 }
