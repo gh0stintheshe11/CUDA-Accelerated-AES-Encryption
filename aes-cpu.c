@@ -1,3 +1,11 @@
+/*
+ *
+ * Implements AES CTR.
+ * To compile and run:
+ * 	gcc aes-cpu.c && ./a.out
+ *
+ */
+
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdint.h>
@@ -16,6 +24,7 @@ typedef struct CipherBlock
 	uint64_t hi;
 
 } CBlock_t;   /* 16-byte fixed size block */
+
 
 static uint8_t* sbox;
 
@@ -89,6 +98,20 @@ void subBytesBlock(CBlock_t* in)
  * the bytes of the 128-bit block.
  * lo: B7  B6  B5  B4  | B3  B2  B1 B0
  * hi: B15 B14 B13 B12 | B11 B10 B9 B8
+ *
+ * Actually need:
+ * B15 B11 B7 B3 
+ * B14 B10 B6 B2
+ * B13 B9  B5 B1
+ * B12 B8  B4 B0
+ *
+ * So to fix this, for input
+ * B0 B1 B2 B3 ... B15
+ * lo should be 
+ * B8 B9 B10 B11 | B12 B13 B14 B15
+ * hi should be
+ * B0 B1 B2 B3 | B4 B5 B6 B7
+ *
  */
 
 
@@ -647,6 +670,37 @@ void addRoundKey(CBlock_t* in, CBlock_t* rk)
 
 
 
+/*
+ * Encrypt a block. Same as openssl, iv is 128-bit
+ */
+void blockEncrypt(CBlock_t* in, CBlock_t* key)
+{
+	/* Round 0: addRoundKey with og key */
+	addRoundKey(in, key);
+
+	/* 9 main rounds */
+	for(int i = 0; i < 9; i++)
+	{
+		keySchedule(key, i+1); // get round key: starts at round 1 goes to round 9
+		subBytesBlock(in);
+		shiftRows(in);
+		mixColumns(in);
+		addRoundKey(in, key);
+	}
+
+	/* Last Round: 10th. No mixColumns() */
+	keySchedule(key, 10);
+	subBytesBlock(in);
+	shiftRows(in);
+	addRoundKey(in, key);
+}
+
+
+
+
+
+
+
 void test_subByte()
 {
 	for (int i  = 0; i< 16; i++)
@@ -703,6 +757,263 @@ void printStateBlock(CBlock_t* in)
 	}
 }
 
+/*
+ * Reformat the input. For 128b/64B input 
+ * B0 B1 B2 B3 ... B12 B13 B14 B15
+ * Parameter hi contains: B0 B1 .. B7
+ * Parameter lo contains: B8 B9 .. B15
+ * This function construct the correct state/block
+ */
+void setBlock(CBlock_t* in, uint64_t hi, uint64_t lo)
+{
+	in->lo = 0;
+	in->hi = 0;
+	for(int i = 0; i < 8; i++)
+	{
+		uint64_t mask = (uint64_t) 0xff << (8 * i);
+		uint8_t hByte = (uint8_t) ((hi & mask) >> (8 * i));
+		uint8_t lByte = (uint8_t) ((lo & mask) >> (8 * i));
+		in->lo |= ((uint64_t) hByte) << (8 * (7-i));
+		in->hi |= ((uint64_t) lByte) << (8 * (7-i));
+	}
+}
+
+void getBlock(CBlock_t* in, uint64_t* hi, uint64_t* lo)
+{
+	*lo = 0;
+	*hi = 0;
+	for(int i = 0; i < 8; i++)
+	{
+		uint64_t mask = (uint64_t) 0xff << (8 * i);
+		uint8_t hByte = (uint8_t) ((in->hi & mask) >> (8 * i));
+		uint8_t lByte = (uint8_t) ((in->lo & mask) >> (8 * i));
+		*lo |= ((uint64_t) hByte) << (8 * (7-i));
+		*hi |= ((uint64_t) lByte) << (8 * (7-i));
+	}
+}
+
+
+/* Manages CTR states */
+static CBlock_t* nonce;
+void AESCTRinit(CBlock_t* iv)
+{
+	uint64_t hi, lo;
+	sbox = (uint8_t*) malloc(sizeof(uint8_t) * 16 * 16);
+	initSbox(sbox);
+	
+	nonce = (CBlock_t*) malloc(sizeof(CBlock_t));
+	
+
+	getBlock(iv, &hi, &lo);
+
+	printf("IV init'ed to:");
+	printf("%016lx_%016lx\n", hi, lo);
+
+	setBlock(nonce, hi, lo);	
+}
+
+void AESCTRenc(CBlock_t* data, CBlock_t* key)
+{
+	/* Assume nonce is ready */
+	CBlock_t* n = (CBlock_t*) malloc(sizeof(CBlock_t));
+	n->lo = nonce->lo; n->hi = nonce->hi;
+
+	blockEncrypt(n, key);
+
+	/* xor */
+	data->hi ^= n->hi;
+	data->lo ^= n->lo;
+
+
+	free(n);
+
+	/* incr nonce */
+	uint64_t nHi, nLo, resHi, resLo;
+	getBlock(nonce, &nHi, &nLo);
+	resLo = nLo + 1;
+	resHi = nHi + ((resLo < nLo) ? 1 : 0);
+	setBlock(nonce, resHi, resLo);
+	printf("Counter:\n\t%016lx_%016lx  =>  %016lx_%016lx\n", nHi, nLo, resHi, resLo);
+
+}
+
+void AESCTRcleanup()
+{
+	free(nonce);
+	free(sbox);
+}
+
+
+/* Some file operation Utils...  */
+
+/* return 1 on EOF */
+int fileReadBlock(CBlock_t* data, FILE* handle)
+{
+	uint64_t hi = 0;
+	uint64_t lo = 0;
+	uint8_t byte = 0;
+	for(int i = 0; i < 8; i++) // read hi 8 byte
+	{
+		if(!fread(&byte, 1, 1, handle)) // read 1B
+		{
+			printf("EOF!\n");
+			hi |= ((uint64_t) byte) << (8 * ( 7 - i));
+			setBlock(data, hi, lo);
+			return 1;
+		}
+		else
+		{
+			hi |= ((uint64_t) byte) << (8 * (7 - i));
+		}
+	}
+	for(int i = 0; i < 8; i++) // read lo 8 byte
+	{
+		if(!fread(&byte, 1, 1, handle)) // read 1B
+		{
+			printf("EOF!\n");
+			lo |= ((uint64_t) byte) << (8 * (7 - i));
+			setBlock(data, hi, lo);
+			return 1;
+		}
+		else
+		{
+			lo |= ((uint64_t) byte) << (8 * (7 - i));
+		}
+	}
+	setBlock(data, hi, lo);
+	return 0;
+}
+
+
+/* interprets file content as ascii encoded hex data */
+void fileReadKey(CBlock_t* data, char* name)
+{
+	uint64_t hi = 0;
+	uint64_t lo = 0;
+	uint8_t byte = 0;
+	char buffer[3];
+	buffer[2] = '\0';
+	
+	FILE* handle = fopen(name, "r");
+
+	for(int i = 0; i < 8; i++) // read hi 8 byte
+	{
+		if(fread(buffer, 1, 2, handle) != 2) // read 2 char
+		{
+			printf("Wrong file format: reached EOF!\n");
+			return;
+		}
+		else
+		{
+			byte = (uint8_t) strtol(buffer, NULL, 16);
+			hi |= ((uint64_t) byte) << (8 * (7 - i));
+		}
+	}
+	for(int i = 0; i < 8; i++) // read lo 8 byte
+	{
+		if(fread(buffer, 1, 2, handle) != 2) // read 2 char
+		{
+			printf("Wrong file format: reached EOF!\n");
+			return;
+		}
+		else
+		{
+			byte = (uint8_t) strtol(buffer, NULL, 16);
+			lo |= ((uint64_t) byte) << (8 * (7 - i));
+		}
+	}
+	setBlock(data, hi, lo);
+	fclose(handle);
+}
+
+
+
+void fileWriteBlock(CBlock_t* data, FILE* handle)
+{
+	uint64_t hi = 0;
+	uint64_t lo = 0;
+	uint8_t byte;
+	getBlock(data, &hi, &lo);
+
+	for(int i = 0; i < 8; i++)
+	{
+		byte = (uint8_t) (  (hi & ( (uint64_t)0xff << (8 * (7 - i)) )) >> (8 * (7 - i))  );
+		fwrite(&byte, 1, 1, handle);
+	}
+
+	for(int i = 0; i < 8; i++)
+	{
+		byte = (uint8_t) (  (lo & ( (uint64_t)0xff << (8 * (7 - i)) )) >> (8 * (7 - i))  );
+		fwrite(&byte, 1, 1, handle);
+	}
+
+
+}
+
+/// This is it.
+void AESCTREncFile(char* filename, char* ivname, char* keyname, char* outname)
+{
+	uint64_t hi, lo;
+	FILE* in, *out;
+	
+	CBlock_t* data = (CBlock_t*) malloc(sizeof(CBlock_t));
+	CBlock_t*  iv  = (CBlock_t*) malloc(sizeof(CBlock_t));
+	CBlock_t* key  = (CBlock_t*) malloc(sizeof(CBlock_t));
+	CBlock_t* blockKey = (CBlock_t*) malloc(sizeof(CBlock_t));
+
+	fileReadKey(iv, ivname);
+	fileReadKey(key, keyname);
+
+
+	getBlock(iv, &hi, &lo);
+	printf("iv:\n%016lx_%016lx\n", hi, lo);
+	
+	getBlock(key, &hi, &lo);
+	printf("key:\n%016lx_%016lx\n", hi, lo);
+	
+	AESCTRinit(iv);
+
+	in = fopen(filename, "rb");
+	out = fopen(outname, "wb");
+
+	while(fileReadBlock(data, in) != 1)
+	{
+		// reset key
+		blockKey->lo = key->lo; blockKey->hi = key->hi;
+		getBlock(data, &hi, &lo);
+		printf("Block Data:\n%016lx_%016lx\n", hi, lo);
+		AESCTRenc(data, blockKey);
+		fileWriteBlock(data, out);
+	
+	}
+	blockKey->lo = key->lo; blockKey->hi = key->hi;
+	getBlock(data, &hi, &lo);
+	printf("Block Data:\n%016lx_%016lx\n", hi, lo);
+	AESCTRenc(data, blockKey);
+	fileWriteBlock(data, out);
+
+	printf("Input reached EOF.\n");
+
+
+	fclose(in);
+	fclose(out);
+
+	free(data);
+	free(key);
+	free(iv);
+	free(blockKey);
+
+	AESCTRcleanup();
+}
+
+
+
+/* Some tests */
+
+void test_fileReadBlock()
+{
+	AESCTREncFile("aaa", "iv.txt", "key.txt", "testout.bin");
+}
 
 void test_shiftRows()
 {
@@ -811,24 +1122,59 @@ void test_addRoundKey()
 }
 
 
+void test_blockEncrypt()
+{
+	CBlock_t *input, *key;
+	input = (CBlock_t*) malloc(sizeof(CBlock_t));
+	key = (CBlock_t*) malloc(sizeof(CBlock_t));
+	
+	setBlock(input, 0x4c6f72656d206970, 0x73756d20646f6c6f);
+	setBlock(key, 0x0001020304050607, 0x08090a0b0c0d0e0f);
+
+	printStateBlock(input);
+	printStateBlock(key);
+	blockEncrypt(input, key);
+
+	uint64_t readHi, readLo;
+	getBlock(input, &readHi, &readLo);
+		
+	printf("Output:\n%016lx%016lx\n", readHi, readLo);
+
+
+	free(input);
+	free(key);
+
+
+}
+
+
+
 
 
 int main(int argc, char** argv)
 {
-	sbox = (uint8_t*) malloc(sizeof(uint8_t) * 16 * 16);
-	initSbox(sbox);
-	
-
-	
+		
 	//test_subBytesBlock();
 	//test_shiftRows();
 	//test_gfMul();
 	//test_mixColumns();
 	
 	//test_keySchedule();
-	test_addRoundKey();
+	//test_addRoundKey();
+	//test_blockEncrypt();
 
-	free(sbox);
+	//test_fileReadBlock();
+
+	if(argc != 5)
+	{
+		printf("Usage:\n\t%s [input file] [key] [iv] [output file]\n", argv[0]);
+		return 0;
+	}
+
+	printf("Input file: %s\nKey file: %s\nIV file: %s\nOutput file: %s\n", argv[1], argv[2], argv[3], argv[4]);
+
+	AESCTREncFile(argv[1], argv[3], argv[2], argv[4]);
+
 
 	return 0;
 }
