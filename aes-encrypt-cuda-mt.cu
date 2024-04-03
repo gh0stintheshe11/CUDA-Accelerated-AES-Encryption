@@ -12,9 +12,9 @@
 #include "utils-cuda.h"
 
 /*
-    DEAD END
+    DEAD END, do not use.
     CPU multithreading (MT) + GPU stream version
-    too slow: guessing a big transfer is better than multiple small transfer
+    too slow: guessing a big transfer is better than multiple small transfer?
 */
 
 #define AES_KEY_SIZE 16
@@ -208,16 +208,13 @@ __global__ void aes_ctr_encrypt_kernel(unsigned char *plaintext, unsigned char *
 std::queue<size_t> workQueue;
 std::mutex queueMutex;
 std::condition_variable queueCondVar;
-// Declare the allChunksProcessed and nextChunkNumber variables
-bool allChunksProcessed = false;
-std::mutex allChunksProcessedMutex;
-size_t nextChunkNumber = 0;
-// Create a condition variable to signal when a chunk has been processed
-std::condition_variable chunkProcessedCondVar;
-std::queue<size_t> processedChunks;
-std::mutex processedChunksMutex;
 
-// Define a struct to hold the chunk data and the chunk number
+bool allChunksProcessed = false;
+
+unsigned char** chunks;
+size_t numChunks;
+size_t* chunkSizes;
+
 struct Chunk {
     size_t number;
     unsigned char* data;
@@ -235,28 +232,39 @@ void writeThread(const char* filename) {
 
         {
             std::unique_lock<std::mutex> lock(writeMutex);
-            writeCondVar.wait(lock, []{ return !writeQueue.empty() || allChunksProcessed; });
+            writeCondVar.wait(lock, []{ return !writeQueue.empty(); });
 
             if (!writeQueue.empty()) {
                 // Get the next processed chunk from the queue
                 chunk = writeQueue.front();
                 writeQueue.pop_front();
-            } else if (allChunksProcessed) {
+                std::cout << "WriteThread: Got chunk " << chunk.number << std::endl;
+
+                // Write the processed chunk to the output file
+                write_encrypted_multithreading(chunk.data, chunk.size, filename);
+                std::cout << "WriteThread: Writing chunk " << chunk.number << " to file " << filename << std::endl;
+            }
+
+            if (writeQueue.empty() && allChunksProcessed) {
+                std::cout << "WriteThread: All chunks processed, exiting" << std::endl;
                 break;
             }
         }
-
-        // Write the processed chunk to the output file
-        write_encrypted_multithreading(chunk.data, chunk.size, filename);
     }
 }
 
-void processChunk(size_t i, unsigned char** chunks, size_t* chunkSizes, unsigned char* expandedKey, unsigned char* iv, cudaStream_t* streams, unsigned char** d_chunks, unsigned char** d_ciphertexts) {
+void processChunk(size_t i, unsigned char** chunks, unsigned char** ciphertexts, size_t* chunkSizes, unsigned char* expandedKey, unsigned char* iv, cudaStream_t* streams, unsigned char** d_chunks, unsigned char** d_ciphertexts) {
+    std::cout << "Processing chunk " << i << std::endl;
     cudaStreamCreate(&streams[i]);
 
     // Allocate memory on the GPU
     cudaMalloc(&d_chunks[i], chunkSizes[i]);
     cudaMalloc(&d_ciphertexts[i], chunkSizes[i]);
+
+    // Allocate memory for iv on the GPU
+    unsigned char* d_iv;
+    cudaMalloc(&d_iv, AES_BLOCK_SIZE);
+    cudaMemcpy(d_iv, iv, AES_BLOCK_SIZE, cudaMemcpyHostToDevice);
 
     // Copy the chunk to the GPU
     cudaMemcpyAsync(d_chunks[i], chunks[i], chunkSizes[i], cudaMemcpyHostToDevice, streams[i]);
@@ -264,31 +272,31 @@ void processChunk(size_t i, unsigned char** chunks, size_t* chunkSizes, unsigned
     // Launch the kernel
     dim3 numThreadsPerBlock(256);
     dim3 numBlocksPerGrid((chunkSizes[i] + numThreadsPerBlock.x - 1) / numThreadsPerBlock.x);
-    aes_ctr_encrypt_kernel<<<numBlocksPerGrid, numThreadsPerBlock>>>(d_chunks[i], d_ciphertexts[i], expandedKey, iv, numBlocksPerGrid.x, chunkSizes[i]);
+    aes_ctr_encrypt_kernel<<<numBlocksPerGrid, numThreadsPerBlock>>>(d_chunks[i], d_ciphertexts[i], expandedKey, d_iv, numBlocksPerGrid.x, chunkSizes[i]);
 
     // Copy the processed data back to the CPU
-    cudaMemcpyAsync(chunks[i], d_ciphertexts[i], chunkSizes[i], cudaMemcpyDeviceToHost, streams[i]);
+    cudaMemcpyAsync(ciphertexts[i], d_ciphertexts[i], chunkSizes[i], cudaMemcpyDeviceToHost, streams[i]);
 
     // Wait for the copy to finish
     cudaStreamSynchronize(streams[i]);
 
+    cudaFree(d_chunks[i]);
+    cudaFree(d_ciphertexts[i]);
+    cudaFree(d_iv);
+    cudaStreamDestroy(streams[i]);
+
     // After the copy is finished, add the chunk to the writeQueue
     {
         std::lock_guard<std::mutex> lock(writeMutex);
-        writeQueue.push_back({i, chunks[i], chunkSizes[i]});
+        writeQueue.push_back({i, ciphertexts[i], chunkSizes[i]});
+        writeCondVar.notify_one();
     }
-
-    writeCondVar.notify_one();
-
-    cudaFree(d_chunks[i]);
-    cudaFree(d_ciphertexts[i]);
-    cudaStreamDestroy(streams[i]);
+    std::cout << "Finished processing chunk " << i << std::endl;
 }
 
-void workerThread(unsigned char** chunks, size_t* chunkSizes, unsigned char* expandedKey, unsigned char* iv, cudaStream_t* streams, unsigned char** d_chunks, unsigned char** d_ciphertexts) {
+void workerThread(unsigned char** chunks, unsigned char** ciphertexts, size_t* chunkSizes, unsigned char expandedKey[176], unsigned char iv[16], cudaStream_t* streams, unsigned char** d_chunks, unsigned char** d_ciphertexts) {
     while (true) {
         size_t i;
-
         // Get a chunk from the workQueue
         {
             std::unique_lock<std::mutex> lock(queueMutex);
@@ -298,21 +306,24 @@ void workerThread(unsigned char** chunks, size_t* chunkSizes, unsigned char* exp
                 }
                 queueCondVar.wait(lock);
             }
-
             // Get the next chunk number from the queue
             i = workQueue.front();
             workQueue.pop();
         }
-
         // Process the chunk
-        processChunk(i, chunks, chunkSizes, expandedKey, iv, streams, d_chunks, d_ciphertexts);
+        processChunk(i, chunks, ciphertexts, chunkSizes, expandedKey, iv, streams, d_chunks, d_ciphertexts);
 
-        // After processing a chunk, signal that a chunk has been processed
+        // After the chunk is processed, add it to the writeQueue
         {
-            std::lock_guard<std::mutex> lock(processedChunksMutex);
-            processedChunks.push(i);
+            std::lock_guard<std::mutex> lock(writeMutex);
+            unsigned char* ciphertextCopy = new unsigned char[chunkSizes[i]];
+            memcpy(ciphertextCopy, ciphertexts[i], chunkSizes[i]);
+            writeQueue.push_back({i, ciphertextCopy, chunkSizes[i]});
+            writeCondVar.notify_one();
         }
-        chunkProcessedCondVar.notify_one();
+
+        // Delete the original ciphertexts[i] after it's copied and added to the writeQueue
+        delete[] ciphertexts[i];
     }
 }
 
@@ -332,28 +343,31 @@ int main(int argc, char* argv[]) {
     read_key_or_iv(key, sizeof(key), "key.txt");
     read_key_or_iv(iv, sizeof(iv), "iv.txt");
 
+    unsigned char** ciphertexts = new unsigned char*[numChunks];
+    for (size_t i = 0; i < numChunks; i++) {
+        ciphertexts[i] = new unsigned char[chunkSizes[i]];
+    }
+
     // Call the host function to expand the key
     unsigned char expandedKey[176];
     KeyExpansionHost(key, expandedKey);
 
     // Preprocess the data into chunks
-    unsigned char** chunks = NULL;
-    size_t* chunkSizes = NULL;
-    size_t numChunks = preprocess(argv[1], AES_BLOCK_SIZE, &chunks, &chunkSizes);
+    numChunks = preprocess(argv[1], AES_BLOCK_SIZE, &chunks, &chunkSizes);
 
     // Create a pool of CUDA streams
     cudaStream_t* streams = new cudaStream_t[numChunks];
     unsigned char** d_chunks = new unsigned char*[numChunks];
     unsigned char** d_ciphertexts = new unsigned char*[numChunks];
 
-    // Create a pool of worker threads
+    // Create the worker threads
     std::thread workerThreads[8];
     for (int i = 0; i < 8; i++) {
-        workerThreads[i] = std::thread(workerThread, chunks, chunkSizes, expandedKey, iv, streams, d_chunks, d_ciphertexts);
+        workerThreads[i] = std::thread(workerThread, chunks, ciphertexts, chunkSizes, expandedKey, iv, streams, d_chunks, d_ciphertexts);
     }
 
-    // Create a thread to write the processed chunks to the file
-    std::thread writeThreadInstance(writeThread, argv[1]);
+    // Create the write thread
+    std::thread writeThreadInstance(writeThread, "encrypted.bin");
 
     // Add the chunks to the work queue
     for (size_t i = 0; i < numChunks; i++) {
@@ -362,21 +376,22 @@ int main(int argc, char* argv[]) {
             workQueue.push(i);
         }
         queueCondVar.notify_one();
+        std::cout << "Added chunk " << i << " to work queue" << std::endl;
     }
+
+    // Notify all waiting threads that all chunks have been processed
+    queueCondVar.notify_all();
 
     // Wait for all threads to finish
     for (int i = 0; i < 8; i++) {
         workerThreads[i].join();
     }
 
-    // Set allChunksProcessed to true after all chunks have been added to the work queue
-    {
-        std::lock_guard<std::mutex> lock(allChunksProcessedMutex);
-        allChunksProcessed = true;
-    }
+    // Set allChunksProcessed to true after all chunks have been processed
+    allChunksProcessed = true;
+    std::cout << "WorkerThread: All chunks processed, exiting" << std::endl;
 
-    // Notify all waiting threads that all chunks have been processed
-    queueCondVar.notify_all();
+    writeCondVar.notify_all();
 
     // Wait for the write thread to finish
     writeThreadInstance.join();
