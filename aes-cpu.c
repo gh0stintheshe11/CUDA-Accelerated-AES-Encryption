@@ -847,11 +847,13 @@ void AESCTRcleanup()
 /* Some file operation Utils...  */
 
 /* return 1 on EOF */
-int fileReadBlock(CBlock_t* data, FILE* handle)
+int fileReadBlock(CBlock_t* data, FILE* handle, int* bytesRead)
 {
 	uint64_t hi = 0;
 	uint64_t lo = 0;
 	uint8_t byte = 0;
+	*bytesRead = 0;
+
 	for(int i = 0; i < 8; i++) // read hi 8 byte
 	{
 		if(!fread(&byte, 1, 1, handle)) // read 1B
@@ -863,6 +865,7 @@ int fileReadBlock(CBlock_t* data, FILE* handle)
 		}
 		else
 		{
+			*bytesRead = *bytesRead + 1;
 			hi |= ((uint64_t) byte) << (8 * (7 - i));
 		}
 	}
@@ -877,6 +880,7 @@ int fileReadBlock(CBlock_t* data, FILE* handle)
 		}
 		else
 		{
+			*bytesRead = *bytesRead + 1;
 			lo |= ((uint64_t) byte) << (8 * (7 - i));
 		}
 	}
@@ -928,23 +932,31 @@ void fileReadKey(CBlock_t* data, char* name)
 
 
 
-void fileWriteBlock(CBlock_t* data, FILE* handle)
+void fileWriteBlock(CBlock_t* data, FILE* handle, int bytesToWrite)
 {
 	uint64_t hi = 0;
 	uint64_t lo = 0;
 	uint8_t byte;
+	int written = 0;
+
 	getBlock(data, &hi, &lo);
 
 	for(int i = 0; i < 8; i++)
 	{
+		if(written == bytesToWrite)
+			return;
 		byte = (uint8_t) (  (hi & ( (uint64_t)0xff << (8 * (7 - i)) )) >> (8 * (7 - i))  );
 		fwrite(&byte, 1, 1, handle);
+		written++;
 	}
 
 	for(int i = 0; i < 8; i++)
 	{
+		if(written == bytesToWrite)
+			return;
 		byte = (uint8_t) (  (lo & ( (uint64_t)0xff << (8 * (7 - i)) )) >> (8 * (7 - i))  );
 		fwrite(&byte, 1, 1, handle);
+		written++;
 	}
 
 
@@ -955,7 +967,8 @@ void AESCTREncFile(char* filename, char* ivname, char* keyname, char* outname)
 {
 	uint64_t hi, lo;
 	FILE* in, *out;
-	
+	int numBytes = 0;
+
 	CBlock_t* data = (CBlock_t*) malloc(sizeof(CBlock_t));
 	CBlock_t*  iv  = (CBlock_t*) malloc(sizeof(CBlock_t));
 	CBlock_t* key  = (CBlock_t*) malloc(sizeof(CBlock_t));
@@ -976,21 +989,21 @@ void AESCTREncFile(char* filename, char* ivname, char* keyname, char* outname)
 	in = fopen(filename, "rb");
 	out = fopen(outname, "wb");
 
-	while(fileReadBlock(data, in) != 1)
+	while(fileReadBlock(data, in, &numBytes) != 1)
 	{
 		// reset key
 		blockKey->lo = key->lo; blockKey->hi = key->hi;
 		getBlock(data, &hi, &lo);
 		printf("Block Data:\n%016lx_%016lx\n", hi, lo);
 		AESCTRenc(data, blockKey);
-		fileWriteBlock(data, out);
+		fileWriteBlock(data, out, numBytes);
 	
 	}
 	blockKey->lo = key->lo; blockKey->hi = key->hi;
 	getBlock(data, &hi, &lo);
 	printf("Block Data:\n%016lx_%016lx\n", hi, lo);
 	AESCTRenc(data, blockKey);
-	fileWriteBlock(data, out);
+	fileWriteBlock(data, out, numBytes);
 
 	printf("Input reached EOF.\n");
 
