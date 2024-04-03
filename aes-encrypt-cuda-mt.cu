@@ -14,7 +14,8 @@
 /*
     DEAD END, do not use.
     CPU multithreading (MT) + GPU stream version
-    too slow: guessing a big transfer is better than multiple small transfer?
+    I can't get this goddamn piece of shit working!
+    also maybe too slow: guessing a big transfer is better than multiple small transfer?
 */
 
 #define AES_KEY_SIZE 16
