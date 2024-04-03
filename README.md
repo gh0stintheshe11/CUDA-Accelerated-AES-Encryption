@@ -1,27 +1,28 @@
 # ECE1782 Project: CUDA Accelerated AES Encryption
 
----
+
 - aes-encrypt-cuda-v0 
     - vanilla version : no special optimization
     - pass openssl encrypt/decrypt check
----
+
 - aes-encrypt-cuda-mt
     - CPU multithreading + GPU stream version: I was hoping this can optimize the data transfer and kernel excution, but I was too naive.
     - I can't get this PIECE OF SHIT to work, so I'm droping this idea.
----
+
 - aes-encrypt-cuda-v1
     - memory optimization : in progress
----
+
 - aes-encrypt-cuda-v2
     - memory + kernel optimization : in progress
----
+
 - aes-cpu
     - cpu versio: I didn't write this so probably someone else should write something here LOL
----
+
 
 ## Complie and run aes-encrypt-cuda
 
 :boom: All file type supported
+
 :exclamation: IV and Key can be changed in txt file.
 
 Complie: 
