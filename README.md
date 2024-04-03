@@ -16,7 +16,7 @@
     - memory + kernel optimization : in progress
 
 - aes-cpu
-    - cpu versio: I didn't write this so probably someone else should write something here LOL
+    - CPU side AES CTR encryption implementation from scratch.
 
 
 ## Complie and run aes-encrypt-cuda
@@ -39,6 +39,15 @@ Elapsed time: 64 ms
 ```
 and a newly created ```encrypted.bin``` will be the encrypted data.
 
+## Compile and run aes-cpu
+```
+gcc aes-cpu.c && ./a.out
+```
+Usage:
+```
+./a.out [input file name] [key file name] [iv file name] [output file name]
+```
+note: all input output file are read/writen as binary.
 ## Check encryption correctness 
 
 Run varification script:
