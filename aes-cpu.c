@@ -1,32 +1,4 @@
-/*
- *
- * Implements AES CTR.
- * To compile and run:
- * 	gcc aes-cpu.c && ./a.out
- *
- */
-
-#include <stdlib.h>
-#include <stdio.h>
-#include <stdint.h>
-
-
-#define KEY_SIZE 128
-#define N_ROUND 10
-
-#define DEBUG 0
-
-#define ROTL8(x,shift) ((uint8_t) ((x) << (shift)) | ((x) >> (8 - (shift))))
-
-typedef struct CipherBlock
-{
-	uint64_t lo;
-	uint64_t hi;
-
-} CBlock_t;   /* 16-byte fixed size block */
-
-
-static uint8_t* sbox;
+#include "aes-cpu.h"
 
 void printStateBlock(CBlock_t*);
 
@@ -794,7 +766,6 @@ void getBlock(CBlock_t* in, uint64_t* hi, uint64_t* lo)
 
 
 /* Manages CTR states */
-static CBlock_t* nonce;
 void AESCTRinit(CBlock_t* iv)
 {
 	uint64_t hi, lo;
@@ -806,8 +777,8 @@ void AESCTRinit(CBlock_t* iv)
 
 	getBlock(iv, &hi, &lo);
 
-	printf("IV init'ed to:");
-	printf("%016lx_%016lx\n", hi, lo);
+	//printf("IV init'ed to:");
+	//printf("%016lx_%016lx\n", hi, lo);
 
 	setBlock(nonce, hi, lo);	
 }
@@ -833,7 +804,7 @@ void AESCTRenc(CBlock_t* data, CBlock_t* key)
 	resLo = nLo + 1;
 	resHi = nHi + ((resLo < nLo) ? 1 : 0);
 	setBlock(nonce, resHi, resLo);
-	printf("Counter:\n\t%016lx_%016lx  =>  %016lx_%016lx\n", nHi, nLo, resHi, resLo);
+	//printf("Counter:\n\t%016lx_%016lx  =>  %016lx_%016lx\n", nHi, nLo, resHi, resLo);
 
 }
 
@@ -858,7 +829,7 @@ int fileReadBlock(CBlock_t* data, FILE* handle, int* bytesRead)
 	{
 		if(!fread(&byte, 1, 1, handle)) // read 1B
 		{
-			printf("EOF!\n");
+			//printf("EOF!\n");
 			hi |= ((uint64_t) byte) << (8 * ( 7 - i));
 			setBlock(data, hi, lo);
 			return 1;
@@ -873,7 +844,7 @@ int fileReadBlock(CBlock_t* data, FILE* handle, int* bytesRead)
 	{
 		if(!fread(&byte, 1, 1, handle)) // read 1B
 		{
-			printf("EOF!\n");
+			//printf("EOF!\n");
 			lo |= ((uint64_t) byte) << (8 * (7 - i));
 			setBlock(data, hi, lo);
 			return 1;
@@ -979,10 +950,10 @@ void AESCTREncFile(char* filename, char* ivname, char* keyname, char* outname)
 
 
 	getBlock(iv, &hi, &lo);
-	printf("iv:\n%016lx_%016lx\n", hi, lo);
+	//printf("iv:\n%016lx_%016lx\n", hi, lo);
 	
 	getBlock(key, &hi, &lo);
-	printf("key:\n%016lx_%016lx\n", hi, lo);
+	//printf("key:\n%016lx_%016lx\n", hi, lo);
 	
 	AESCTRinit(iv);
 
@@ -994,18 +965,18 @@ void AESCTREncFile(char* filename, char* ivname, char* keyname, char* outname)
 		// reset key
 		blockKey->lo = key->lo; blockKey->hi = key->hi;
 		getBlock(data, &hi, &lo);
-		printf("Block Data:\n%016lx_%016lx\n", hi, lo);
+		//printf("Block Data:\n%016lx_%016lx\n", hi, lo);
 		AESCTRenc(data, blockKey);
 		fileWriteBlock(data, out, numBytes);
 	
 	}
 	blockKey->lo = key->lo; blockKey->hi = key->hi;
 	getBlock(data, &hi, &lo);
-	printf("Block Data:\n%016lx_%016lx\n", hi, lo);
+	//printf("Block Data:\n%016lx_%016lx\n", hi, lo);
 	AESCTRenc(data, blockKey);
 	fileWriteBlock(data, out, numBytes);
 
-	printf("Input reached EOF.\n");
+	//printf("Input reached EOF.\n");
 
 
 	fclose(in);
@@ -1159,42 +1130,6 @@ void test_blockEncrypt()
 
 
 }
-
-
-
-
-
-int main(int argc, char** argv)
-{
-		
-	//test_subBytesBlock();
-	//test_shiftRows();
-	//test_gfMul();
-	//test_mixColumns();
-	
-	//test_keySchedule();
-	//test_addRoundKey();
-	//test_blockEncrypt();
-
-	//test_fileReadBlock();
-
-	if(argc != 5)
-	{
-		printf("Usage:\n\t%s [input file] [key] [iv] [output file]\n", argv[0]);
-		return 0;
-	}
-
-	printf("Input file: %s\nKey file: %s\nIV file: %s\nOutput file: %s\n", argv[1], argv[2], argv[3], argv[4]);
-
-	AESCTREncFile(argv[1], argv[3], argv[2], argv[4]);
-
-
-	return 0;
-}
-
-
-
-
 
 
 
