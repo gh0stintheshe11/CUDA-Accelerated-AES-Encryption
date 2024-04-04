@@ -58,7 +58,7 @@ iv  - iv file name
 key - key file name
 out - output file name
 ```
-note: all input/output files are read/written as binary.
+:musical_note: note: all input/output files are read/written as binary.
 
 ## Check encryption correctness 
 
