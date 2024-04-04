@@ -56,7 +56,7 @@ where
 in  - input file name
 iv  - iv file name
 key - key file name
-otu - output file name
+out - output file name
 ```
 note: all input/output files are read/written as binary.
 
