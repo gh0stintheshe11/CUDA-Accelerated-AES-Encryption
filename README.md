@@ -41,13 +41,25 @@ and a newly created ```encrypted.bin``` will be the encrypted data.
 
 ## Compile and run aes-cpu
 ```
-gcc aes-cpu.c && ./a.out
+gcc aes-cpu.c aes-cpu-main.c && ./a.out
 ```
 Usage:
 ```
 ./a.out [input file name] [key file name] [iv file name] [output file name]
 ```
-note: all input output file are read/writen as binary.
+aes-cpu.h provides the following function:
+```
+void AESCTREncFile(char* in, char* iv, char* key, char* out);
+```
+where
+```
+in  - input file name
+iv  - iv file name
+key - key file name
+otu - output file name
+```
+note: all input/output files are read/written as binary.
+
 ## Check encryption correctness 
 
 Run varification script:
