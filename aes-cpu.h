@@ -31,7 +31,12 @@ static uint8_t* sbox;
 static CBlock_t* nonce;
 
 
-/* use this */
+/* use this:
+ * filename - plain text input file name
+ * ivname   - file name of iv text file that contains 16 byte hex
+ * keyname  - file name of key text file that contains 16 byte hex
+ * outname  - file name of output file
+ */
 void AESCTREncFile(char* filename, char* ivname, char* keyname, char* outname);
 
 
