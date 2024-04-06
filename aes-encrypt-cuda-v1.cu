@@ -158,14 +158,11 @@ __device__ void aes_encrypt_block(unsigned char *input, unsigned char *output, u
 }
 
 __device__ void increment_counter(unsigned char *counter, int increment) {
-    int carry = increment;
-    for (int i = 3; i >= 0; i--) {
-        int sum = counter[AES_BLOCK_SIZE - 1 - i] + carry;
-        counter[AES_BLOCK_SIZE - 1 - i] = sum & 0xFF;
-        carry = sum >> 8;
-        if (carry == 0) {
-            break;
-        }
+    int value = increment;
+    for (int i = AES_BLOCK_SIZE - 1; i >= 0; i--) {
+        value += counter[i];
+        counter[i] = value & 0xFF;
+        value >>= 8;
     }
 }
 
