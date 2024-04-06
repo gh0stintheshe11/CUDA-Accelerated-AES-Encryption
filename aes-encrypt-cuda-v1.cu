@@ -246,10 +246,13 @@ int main(int argc, char* argv[]) {
     cudaMemcpyToSymbol(d_sbox, h_sbox, sizeof(h_sbox));
     cudaMemcpyToSymbol(d_rcon, h_rcon, sizeof(h_rcon));
 
-    // Copy host memory to device
-    cudaMemcpy(d_plaintext, plaintext, dataSize * sizeof(unsigned char), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_iv, iv, AES_BLOCK_SIZE * sizeof(unsigned char), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_expandedKey, expandedKey, 176, cudaMemcpyHostToDevice); 
+    // Create streams
+    cudaStream_t stream1, stream2;
+    cudaStreamCreate(&stream1);
+    cudaStreamCreate(&stream2);
+
+    // Copy data to device in stream1
+    cudaMemcpyAsync(d_expandedKey, expandedKey, 176, cudaMemcpyHostToDevice, stream1); 
 
     // Launch AES-CTR encryption kernel
     aes_ctr_encrypt_kernel<<<blocksPerGrid, threadsPerBlock>>>(d_plaintext, d_ciphertext, d_expandedKey, d_iv, numBlocks, dataSize);
@@ -257,14 +260,20 @@ int main(int argc, char* argv[]) {
     // Synchronize device
     cudaDeviceSynchronize();
 
-    // Copy device ciphertext back to host
+    // Copy device ciphertext back to host in stream1
     unsigned char *ciphertext = new unsigned char[dataSize];
-    cudaMemcpy(ciphertext, d_ciphertext, dataSize * sizeof(unsigned char), cudaMemcpyDeviceToHost);
+    cudaMemcpyAsync(ciphertext, d_ciphertext, dataSize * sizeof(unsigned char), cudaMemcpyDeviceToHost, stream1);
+
+    // Synchronize streams
+    cudaStreamSynchronize(stream1);
+    cudaStreamSynchronize(stream2);
 
     // Output encoded text to a file
     write_encrypted(ciphertext, dataSize, "encrypted.bin");
 
     // Cleanup
+    cudaStreamDestroy(stream1);
+    cudaStreamDestroy(stream2);
     cudaFree(d_plaintext);
     cudaFree(d_ciphertext);
     cudaFree(d_iv);
