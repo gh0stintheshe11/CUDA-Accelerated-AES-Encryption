@@ -159,9 +159,9 @@ __device__ void aes_encrypt_block(unsigned char *input, unsigned char *output, u
 
 __device__ void increment_counter(unsigned char *counter, int increment) {
     int carry = increment;
-    for (int i = AES_BLOCK_SIZE - 1; i >= 0; i--) {
-        int sum = counter[i] + carry;
-        counter[i] = sum & 0xFF;
+    for (int i = 3; i >= 0; i--) {
+        int sum = counter[AES_BLOCK_SIZE - 1 - i] + carry;
+        counter[AES_BLOCK_SIZE - 1 - i] = sum & 0xFF;
         carry = sum >> 8;
         if (carry == 0) {
             break;
@@ -173,13 +173,18 @@ __global__ void aes_ctr_encrypt_kernel(unsigned char *plaintext, unsigned char *
     // Calculate the global block ID
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
 
+    // Declare shared memory for the ciphertext block
+    __shared__ unsigned char shared_ciphertextBlock[AES_BLOCK_SIZE];
+
     // Check if the block is within the number of blocks
     if (tid < numBlocks) {
-        // Create a counter array
+        // Declare a local counter array
         unsigned char counter[AES_BLOCK_SIZE];
 
         // Copy the IV to the counter
-        memcpy(counter, iv, AES_BLOCK_SIZE);
+        for (int i = 0; i < AES_BLOCK_SIZE; ++i) {
+            counter[i] = iv[i];
+        }
 
         // Increment the counter by the block ID
         increment_counter(counter, tid);
@@ -188,12 +193,11 @@ __global__ void aes_ctr_encrypt_kernel(unsigned char *plaintext, unsigned char *
         int blockSize = (tid == numBlocks - 1 && dataSize % AES_BLOCK_SIZE != 0) ? dataSize % AES_BLOCK_SIZE : AES_BLOCK_SIZE;
 
         // Encrypt the counter to get the ciphertext block
-        unsigned char ciphertextBlock[AES_BLOCK_SIZE];
-        aes_encrypt_block(counter, ciphertextBlock, expandedKey);
+        aes_encrypt_block(counter, shared_ciphertextBlock, expandedKey);
 
         // XOR the plaintext with the ciphertext block
         for (int i = 0; i < blockSize; ++i) {
-            ciphertext[tid * AES_BLOCK_SIZE + i] = plaintext[tid * AES_BLOCK_SIZE + i] ^ ciphertextBlock[i];
+            ciphertext[tid * AES_BLOCK_SIZE + i] = plaintext[tid * AES_BLOCK_SIZE + i] ^ shared_ciphertextBlock[i];
         }
     }
 }
@@ -207,9 +211,6 @@ int main(int argc, char* argv[]) {
 
     // Get the file extension
     std::string extension = getFileExtension(argv[1]);
-
-    // Get the start time
-    auto start = std::chrono::high_resolution_clock::now();
 
     // Read the key and IV
     unsigned char key[16];
@@ -246,13 +247,13 @@ int main(int argc, char* argv[]) {
     cudaMemcpyToSymbol(d_sbox, h_sbox, sizeof(h_sbox));
     cudaMemcpyToSymbol(d_rcon, h_rcon, sizeof(h_rcon));
 
-    // Create streams
-    cudaStream_t stream1, stream2;
-    cudaStreamCreate(&stream1);
-    cudaStreamCreate(&stream2);
+    // Get the start time
+    auto start = std::chrono::high_resolution_clock::now();
 
-    // Copy data to device in stream1
-    cudaMemcpyAsync(d_expandedKey, expandedKey, 176, cudaMemcpyHostToDevice, stream1); 
+    // Copy host memory to device
+    cudaMemcpy(d_plaintext, plaintext, dataSize * sizeof(unsigned char), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_iv, iv, AES_BLOCK_SIZE * sizeof(unsigned char), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_expandedKey, expandedKey, 176, cudaMemcpyHostToDevice); 
 
     // Launch AES-CTR encryption kernel
     aes_ctr_encrypt_kernel<<<blocksPerGrid, threadsPerBlock>>>(d_plaintext, d_ciphertext, d_expandedKey, d_iv, numBlocks, dataSize);
@@ -260,20 +261,17 @@ int main(int argc, char* argv[]) {
     // Synchronize device
     cudaDeviceSynchronize();
 
-    // Copy device ciphertext back to host in stream1
+    // Copy device ciphertext back to host
     unsigned char *ciphertext = new unsigned char[dataSize];
-    cudaMemcpyAsync(ciphertext, d_ciphertext, dataSize * sizeof(unsigned char), cudaMemcpyDeviceToHost, stream1);
+    cudaMemcpy(ciphertext, d_ciphertext, dataSize * sizeof(unsigned char), cudaMemcpyDeviceToHost);
 
-    // Synchronize streams
-    cudaStreamSynchronize(stream1);
-    cudaStreamSynchronize(stream2);
+    // Get the stop time
+    auto stop = std::chrono::high_resolution_clock::now();
 
     // Output encoded text to a file
     write_encrypted(ciphertext, dataSize, "encrypted.bin");
 
     // Cleanup
-    cudaStreamDestroy(stream1);
-    cudaStreamDestroy(stream2);
     cudaFree(d_plaintext);
     cudaFree(d_ciphertext);
     cudaFree(d_iv);
@@ -281,12 +279,9 @@ int main(int argc, char* argv[]) {
     delete[] ciphertext;
     delete[] plaintext; 
 
-    // Get the stop time
-    auto stop = std::chrono::high_resolution_clock::now();
-
     // Calculate the elapsed time and print
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(stop - start);
-    std::cout << "Elapsed time: " << duration.count() << " ms\n";
+    std::cout << "IKO time: " << duration.count() << " ms\n";
 
     // After encrypting, append the file extension to the encrypted data
     appendFileExtension("encrypted.bin", extension);

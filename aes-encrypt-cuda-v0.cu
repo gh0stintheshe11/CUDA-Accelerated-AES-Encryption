@@ -208,9 +208,6 @@ int main(int argc, char* argv[]) {
     // Get the file extension
     std::string extension = getFileExtension(argv[1]);
 
-    // Get the start time
-    auto start = std::chrono::high_resolution_clock::now();
-
     // Read the key and IV
     unsigned char key[16];
     unsigned char iv[16];
@@ -246,6 +243,9 @@ int main(int argc, char* argv[]) {
     cudaMemcpyToSymbol(d_sbox, h_sbox, sizeof(h_sbox));
     cudaMemcpyToSymbol(d_rcon, h_rcon, sizeof(h_rcon));
 
+    // Get the start time
+    auto start = std::chrono::high_resolution_clock::now();
+
     // Copy host memory to device
     cudaMemcpy(d_plaintext, plaintext, dataSize * sizeof(unsigned char), cudaMemcpyHostToDevice);
     cudaMemcpy(d_iv, iv, AES_BLOCK_SIZE * sizeof(unsigned char), cudaMemcpyHostToDevice);
@@ -261,6 +261,9 @@ int main(int argc, char* argv[]) {
     unsigned char *ciphertext = new unsigned char[dataSize];
     cudaMemcpy(ciphertext, d_ciphertext, dataSize * sizeof(unsigned char), cudaMemcpyDeviceToHost);
 
+    // Get the stop time
+    auto stop = std::chrono::high_resolution_clock::now();
+
     // Output encoded text to a file
     write_encrypted(ciphertext, dataSize, "encrypted.bin");
 
@@ -272,12 +275,9 @@ int main(int argc, char* argv[]) {
     delete[] ciphertext;
     delete[] plaintext; 
 
-    // Get the stop time
-    auto stop = std::chrono::high_resolution_clock::now();
-
     // Calculate the elapsed time and print
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(stop - start);
-    std::cout << "Elapsed time: " << duration.count() << " ms\n";
+    std::cout << "IKO time: " << duration.count() << " ms\n";
 
     // After encrypting, append the file extension to the encrypted data
     appendFileExtension("encrypted.bin", extension);
