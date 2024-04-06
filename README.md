@@ -27,17 +27,28 @@
 
 Complie: 
 ```
-nvcc utils-cuda.cu aes-encrypt-cuda-<version>.cu -o excutable
+nvcc utils-cuda.cu aes-encrypt-cuda-[version].cu -o [excutable name]
 ```
 Run: 
 ```
-./excutable <filename.type>
+./[excutable name] [filename.type]
 ```
 The output will contain the full run time ( not din/kernel/dout time )
 ```
 Elapsed time: 64 ms
 ```
 and a newly created ```encrypted.bin``` will be the encrypted data.
+
+## Decrypt using openssl script
+
+The decription script now handles the file type extension automatically. The encrypt program append the file extension at the back of the encrypted file. the decrypt script extract that and automatically change the file extension to origianl file extension.
+
+Run dercrypt script:
+```
+./openssl-dec.sh encrypted.bin key.txt iv,txt [output filename]
+```
+
+assume the original file type is ```.txt```, and the output file name is set to ```output```, then the decrypted file will be built as ```output.txt```
 
 ## Compile and run aes-cpu
 ```
@@ -64,7 +75,7 @@ out - output file name
 
 Run varification script:
 ```
-./openssl-check.sh <filename.type>  key.txt iv.txt
+./openssl-check.sh [filename.type]  key.txt iv.txt
 ```
 The output will be similar to this:
 ```
