@@ -335,6 +335,11 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    // Get the file extension
+    std::string filename(argv[1]);
+    size_t pos = filename.rfind('.');
+    std::string extension = (pos == std::string::npos) ? "" : filename.substr(pos);
+
     // Get the start time
     auto start = std::chrono::high_resolution_clock::now();
 
@@ -409,6 +414,13 @@ int main(int argc, char* argv[]) {
     // Calculate the elapsed time and print
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(stop - start);
     std::cout << "Elapsed time: " << duration.count() << " ms\n";
+
+    // After encrypting, append the file extension to the encrypted data
+    FILE* file = fopen("encrypted.bin", "ab");
+    if (file != NULL) {
+        fwrite(extension.c_str(), 1, extension.size() + 1, file);  // +1 to include null terminator
+        fclose(file);
+    }
 
     return 0;
 }
