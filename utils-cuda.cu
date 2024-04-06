@@ -138,3 +138,18 @@ void write_encrypted_multithreading(const unsigned char *ciphertext, size_t size
 
     fclose(file);
 }
+
+std::string getFileExtension(const std::string& filename) {
+    size_t pos = filename.rfind('.');
+    return (pos == std::string::npos) ? "" : filename.substr(pos);
+}
+
+void appendFileExtension(const std::string& filename, const std::string& extension) {
+    FILE* file = fopen(filename.c_str(), "ab");
+    if (file != NULL) {
+        fwrite(extension.c_str(), 1, extension.size() + 1, file);  // +1 to include null terminator
+        fclose(file);
+    } else {
+        std::cerr << "Failed to open file: " << filename << std::endl;
+    }
+}

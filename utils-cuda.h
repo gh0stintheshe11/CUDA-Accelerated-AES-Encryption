@@ -19,4 +19,8 @@ void write_encrypted_multithreading(const unsigned char *ciphertext, size_t size
 
 size_t preprocess(const char *filename, size_t chunkSize, unsigned char ***chunks, size_t **chunkSizes);
 
+std::string getFileExtension(const std::string& filename);
+
+void appendFileExtension(const std::string& filename, const std::string& extension);
+
 #endif // UTILS_CUDA_H
