@@ -2,6 +2,7 @@
 #define UTILS_CUDA_H
 
 #include <cstddef>
+#include <string>
 
 extern unsigned char h_sbox[256];
 extern unsigned char h_rcon[11];

@@ -1,6 +1,7 @@
 #include "utils-cuda.h"
 #include <cstdio>
 #include <cstdlib>
+#include <iostream>
 #include <mutex>
 
 unsigned char h_sbox[256] = {
