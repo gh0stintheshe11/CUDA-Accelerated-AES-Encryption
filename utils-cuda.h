@@ -14,6 +14,8 @@ void read_key_or_iv(unsigned char *data, size_t size, const char *filename);
 // Function to read plaintext from a file
 void read_file_as_binary(unsigned char **data, size_t *size, const char *filename);
 
+void read_file_as_binary_v2(unsigned char **data, size_t *size, const char *filename);
+
 // Function to write ciphertext to a file
 void write_encrypted(const unsigned char *ciphertext, size_t size, const char *filename);
 

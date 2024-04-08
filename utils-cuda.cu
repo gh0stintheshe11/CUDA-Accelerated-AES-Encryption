@@ -73,6 +73,31 @@ void read_file_as_binary(unsigned char **data, size_t *size, const char *filenam
     fclose(file);
 }
 
+// Add pinned memory allocation
+void read_file_as_binary_v2(unsigned char **data, size_t *size, const char *filename) {
+    FILE *file = fopen(filename, "rb");
+    if (file == NULL) {
+        fprintf(stderr, "Cannot open file: %s\n", filename);
+        exit(1);
+    }
+
+    // Determine the file size
+    fseek(file, 0, SEEK_END);
+    *size = ftell(file);
+    fseek(file, 0, SEEK_SET);
+
+    // Allocate pinned memory for data
+    cudaMallocHost((void**)data, *size * sizeof(unsigned char));
+
+    // Read the file into data
+    if (fread(*data, 1, *size, file) != *size) {
+        fprintf(stderr, "Cannot read file: %s\n", filename);
+        exit(1);
+    }
+
+    fclose(file);
+}
+
 size_t preprocess(const char *filename, size_t chunkSize, unsigned char ***chunks, size_t **chunkSizes) {
     // Read the file into a buffer
     unsigned char *buffer;

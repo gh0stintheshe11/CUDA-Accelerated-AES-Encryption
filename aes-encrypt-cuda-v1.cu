@@ -9,7 +9,8 @@
 /*
     Optimization:
         -v1 Constant Memory: S box
-        -v1 Shared Memory: IV and expanded key     
+        -v1 Shared Memory: IV and expanded key    
+        -v1 Pinned Memory: plaintext and ciphertext 
 */
 
 #define AES_KEY_SIZE 16
@@ -233,7 +234,7 @@ int main(int argc, char* argv[]) {
     // Determine the size of the file and read the plaintext
     size_t dataSize;
     unsigned char* plaintext;
-    read_file_as_binary(&plaintext, &dataSize, argv[1]); 
+    read_file_as_binary_v2(&plaintext, &dataSize, argv[1]); 
 
     unsigned char *d_plaintext, *d_ciphertext, *d_iv;
     unsigned char *d_expandedKey;
@@ -270,7 +271,8 @@ int main(int argc, char* argv[]) {
     cudaDeviceSynchronize();
 
     // Copy device ciphertext back to host
-    unsigned char *ciphertext = new unsigned char[dataSize];
+    unsigned char *ciphertext;
+    cudaMallocHost((void**)&ciphertext, dataSize * sizeof(unsigned char));
     cudaMemcpy(ciphertext, d_ciphertext, dataSize * sizeof(unsigned char), cudaMemcpyDeviceToHost);
 
     // Output encoded text to a file
@@ -281,8 +283,8 @@ int main(int argc, char* argv[]) {
     cudaFree(d_ciphertext);
     cudaFree(d_iv);
     cudaFree(d_expandedKey);
-    delete[] ciphertext;
-    delete[] plaintext; 
+    cudaFreeHost(ciphertext);
+    cudaFreeHost(plaintext);
 
     // Get the stop time
     auto stop = std::chrono::high_resolution_clock::now();
