@@ -55,17 +55,17 @@ void read_file_as_binary(unsigned char **data, size_t *size,
 }
 
 // Function to write ciphertext to a file
-void write_ciphertext(const unsigned char *ciphertext, size_t size,
-                      const char *filename) {
-  FILE *file = fopen(filename, "w");
+void write_encrypted(const unsigned char *ciphertext, size_t size,
+                     const char *filename) {
+  FILE *file = fopen(filename, "wb");
   if (file == NULL) {
     fprintf(stderr, "Cannot open file: %s\n", filename);
     exit(1);
   }
-  for (size_t i = 0; i < size; i++) {
-    fprintf(file, "%02x", ciphertext[i]);
+  if (fwrite(ciphertext, 1, size, file) != size) {
+    fprintf(stderr, "Error writing to file: %s\n", filename);
+    exit(1);
   }
-  fprintf(file, "\n");
   fclose(file);
 }
 

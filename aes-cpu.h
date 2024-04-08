@@ -37,7 +37,7 @@ static CBlock_t* nonce;
  * keyname  - file name of key text file that contains 16 byte hex
  * outname  - file name of output file
  */
-void AESCTREncFile(char* filename, char* ivname, char* keyname, char* outname);
+double AESCTREncFile(const char* filename, const char* ivname, const char* keyname, const char* outname);
 
 
 

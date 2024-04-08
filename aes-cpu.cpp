@@ -1,4 +1,5 @@
 #include "aes-cpu.h"
+#include <chrono>
 
 void printStateBlock(CBlock_t*);
 
@@ -861,7 +862,7 @@ int fileReadBlock(CBlock_t* data, FILE* handle, int* bytesRead)
 
 
 /* interprets file content as ascii encoded hex data */
-void fileReadKey(CBlock_t* data, char* name)
+void fileReadKey(CBlock_t* data, const char* name)
 {
 	uint64_t hi = 0;
 	uint64_t lo = 0;
@@ -934,63 +935,66 @@ void fileWriteBlock(CBlock_t* data, FILE* handle, int bytesToWrite)
 }
 
 /// This is it.
-void AESCTREncFile(char* filename, char* ivname, char* keyname, char* outname)
-{
-	uint64_t hi, lo;
-	FILE* in, *out;
-	int numBytes = 0;
+double AESCTREncFile(const char *filename, const char *ivname,
+                     const char *keyname, const char *outname) {
+  auto start = std::chrono::high_resolution_clock::now();
 
-	CBlock_t* data = (CBlock_t*) malloc(sizeof(CBlock_t));
-	CBlock_t*  iv  = (CBlock_t*) malloc(sizeof(CBlock_t));
-	CBlock_t* key  = (CBlock_t*) malloc(sizeof(CBlock_t));
-	CBlock_t* blockKey = (CBlock_t*) malloc(sizeof(CBlock_t));
+  uint64_t hi, lo;
+  FILE *in, *out;
+  int numBytes = 0;
 
-	fileReadKey(iv, ivname);
-	fileReadKey(key, keyname);
+  CBlock_t *data = (CBlock_t *)malloc(sizeof(CBlock_t));
+  CBlock_t *iv = (CBlock_t *)malloc(sizeof(CBlock_t));
+  CBlock_t *key = (CBlock_t *)malloc(sizeof(CBlock_t));
+  CBlock_t *blockKey = (CBlock_t *)malloc(sizeof(CBlock_t));
 
+  fileReadKey(iv, ivname);
+  fileReadKey(key, keyname);
 
-	getBlock(iv, &hi, &lo);
-	//printf("iv:\n%016lx_%016lx\n", hi, lo);
-	
-	getBlock(key, &hi, &lo);
-	//printf("key:\n%016lx_%016lx\n", hi, lo);
-	
-	AESCTRinit(iv);
+  getBlock(iv, &hi, &lo);
+  // printf("iv:\n%016lx_%016lx\n", hi, lo);
 
-	in = fopen(filename, "rb");
-	out = fopen(outname, "wb");
+  getBlock(key, &hi, &lo);
+  // printf("key:\n%016lx_%016lx\n", hi, lo);
 
-	while(fileReadBlock(data, in, &numBytes) != 1)
-	{
-		// reset key
-		blockKey->lo = key->lo; blockKey->hi = key->hi;
-		getBlock(data, &hi, &lo);
-		//printf("Block Data:\n%016lx_%016lx\n", hi, lo);
-		AESCTRenc(data, blockKey);
-		fileWriteBlock(data, out, numBytes);
-	
-	}
-	blockKey->lo = key->lo; blockKey->hi = key->hi;
-	getBlock(data, &hi, &lo);
-	//printf("Block Data:\n%016lx_%016lx\n", hi, lo);
-	AESCTRenc(data, blockKey);
-	fileWriteBlock(data, out, numBytes);
+  AESCTRinit(iv);
 
-	//printf("Input reached EOF.\n");
+  in = fopen(filename, "rb");
+  out = fopen(outname, "wb");
 
+  while (fileReadBlock(data, in, &numBytes) != 1) {
+    // reset key
+    blockKey->lo = key->lo;
+    blockKey->hi = key->hi;
+    getBlock(data, &hi, &lo);
+    // printf("Block Data:\n%016lx_%016lx\n", hi, lo);
+    AESCTRenc(data, blockKey);
+    fileWriteBlock(data, out, numBytes);
+  }
+  blockKey->lo = key->lo;
+  blockKey->hi = key->hi;
+  getBlock(data, &hi, &lo);
+  // printf("Block Data:\n%016lx_%016lx\n", hi, lo);
+  AESCTRenc(data, blockKey);
+  fileWriteBlock(data, out, numBytes);
 
-	fclose(in);
-	fclose(out);
+  // printf("Input reached EOF.\n");
 
-	free(data);
-	free(key);
-	free(iv);
-	free(blockKey);
+  fclose(in);
+  fclose(out);
 
-	AESCTRcleanup();
+  auto stop = std::chrono::high_resolution_clock::now();
+
+  free(data);
+  free(key);
+  free(iv);
+  free(blockKey);
+
+  AESCTRcleanup();
+
+  return std::chrono::duration_cast<std::chrono::milliseconds>(stop - start)
+      .count();
 }
-
-
 
 /* Some tests */
 

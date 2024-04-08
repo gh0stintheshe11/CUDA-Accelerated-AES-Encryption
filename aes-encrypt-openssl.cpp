@@ -2,12 +2,13 @@
 // nvcc aes-encrypt-openssl.c utils.c -o aes-encrypt-openssl -lcrypto -lssl && ./aes-encrypt-openssl
 
 #include "aes-encrypt-openssl.h"
+#include <chrono>
 
 double aes_encrypt_openssl(unsigned char *plaintext, int plaintext_len,
                            unsigned char *key, unsigned char *ivec,
                            unsigned char *ciphertext) {
   // Initialize the library.
-  double start_time = getTimeStampMs();
+  auto start_time = std::chrono::high_resolution_clock::now();
   OpenSSL_add_all_algorithms();
 
   // Create and initialize the context.
@@ -26,12 +27,14 @@ double aes_encrypt_openssl(unsigned char *plaintext, int plaintext_len,
 
   // Finalize the encryption.
   EVP_EncryptFinal_ex(ctx, ciphertext + len, &len);
-  double end_time = getTimeStampMs();
+  auto end_time = std::chrono::high_resolution_clock::now();
 
   // Clean up.
   EVP_CIPHER_CTX_free(ctx);
 
-  return end_time - start_time;
+  return std::chrono::duration_cast<std::chrono::microseconds>(end_time -
+                                                               start_time)
+      .count();
 }
 
 // Comment below if run in benchmarks.
@@ -49,9 +52,9 @@ double aes_encrypt_openssl(unsigned char *plaintext, int plaintext_len,
 //   // Read the plaintext from a file.
 //   size_t dataSize;
 //   unsigned char *plaintext;
-//   read_file_as_binary(&plaintext, &dataSize, "plaintext.txt");
-//   printf("\nPlain text is:\n");
-//   BIO_dump_fp(stdout, (const char *)plaintext, dataSize);
+//   read_file_as_binary(&plaintext, &dataSize, "big.txt");
+//   // printf("\nPlain text is:\n");
+//   // BIO_dump_fp(stdout, (const char *)plaintext, dataSize);
 
 //   // Encrypt text.
 //   unsigned char *ciphertext =
@@ -59,9 +62,9 @@ double aes_encrypt_openssl(unsigned char *plaintext, int plaintext_len,
 //   aes_encrypt_openssl(plaintext, dataSize, key, iv, ciphertext);
 
 //   // Output encoded text to a file.
-//   write_ciphertext(ciphertext, dataSize, "ciphertext.txt");
-//   printf("\nCiphertext is:\n");
-//   BIO_dump_fp(stdout, (const char *)ciphertext, dataSize);
+//   write_encrypted(ciphertext, dataSize, "encrypted.bin");
+//   // printf("\nCiphertext is:\n");
+//   // BIO_dump_fp(stdout, (const char *)ciphertext, dataSize);
 
 //   // Cleanup.
 //   free(ciphertext);
