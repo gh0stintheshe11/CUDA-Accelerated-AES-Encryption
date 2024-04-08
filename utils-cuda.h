@@ -21,7 +21,7 @@ void write_encrypted(const unsigned char *ciphertext, size_t size, const char *f
 
 void write_encrypted_v2(unsigned char* ciphertext, size_t size, const char* filename);
 
-void write_encrypted_multithreading(const unsigned char *ciphertext, size_t size, const char *filename);
+void write_encrypted_multithreading(const unsigned char *ciphertext, size_t size, const char *filename); 
 
 size_t preprocess(const char *filename, size_t chunkSize, unsigned char ***chunks, size_t **chunkSizes);
 

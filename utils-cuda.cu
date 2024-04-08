@@ -149,27 +149,15 @@ void write_encrypted(const unsigned char *ciphertext, size_t size, const char *f
 }
 
 void write_encrypted_v2(unsigned char* ciphertext, size_t size, const char* filename) {
-    // Open the file in append mode
     FILE* file = fopen(filename, "ab");
-
-    // Check if the file was correctly opened
     if (file == NULL) {
         printf("Error opening file: %s\n", filename);
         return;
     }
-
-    // Write the ciphertext to the file
-    size_t written = fwrite(ciphertext, sizeof(unsigned char), size, file);
-
-    // Check if the data was correctly written
-    if (written != size) {
-        printf("Error writing data to file: %s\n", filename);
+    if (fwrite(ciphertext, 1, size, file) != size) {
+        fprintf(stderr, "Error writing to file: %s\n", filename);
+        exit(1);
     }
-
-    // Print debug information
-    printf("Written %lu bytes to file: %s\n", written, filename);
-
-    // Close the file
     fclose(file);
 }
 
