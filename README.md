@@ -39,9 +39,9 @@ Elapsed time: 64 ms
 ```
 and a newly created ```encrypted.bin``` will be the encrypted data.
 
-## Decrypt using openssl script
+## Decrypt using OpenSSL script
 
-The decription script now handles the file type extension automatically. The encrypt program append the file extension at the back of the encrypted file. the decrypt script extract that and automatically change the file extension to origianl file extension.
+The decryption script now handles the file type extension automatically. The encrypt program append the file extension at the back of the encrypted file. the decrypt script extract that and automatically change the file extension to origianl file extension.
 
 Run dercrypt script:
 ```

@@ -3,6 +3,8 @@
 #include <cstdlib>
 #include <iostream>
 #include <mutex>
+#include <string>
+#include <iostream>
 
 unsigned char h_sbox[256] = {
     0x63, 0x7C, 0x77, 0x7B, 0xF2, 0x6B, 0x6F, 0xC5, 0x30, 0x01, 0x67, 0x2B, 0xFE, 0xD7, 0xAB, 0x76,
@@ -66,6 +68,31 @@ void read_file_as_binary(unsigned char **data, size_t *size, const char *filenam
     size_t bytesRead = fread(*data, 1, *size, file);
     if (bytesRead != *size) {
         fprintf(stderr, "Failed to read the entire file: %s\n", filename);
+        exit(1);
+    }
+
+    fclose(file);
+}
+
+// Add pinned memory allocation
+void read_file_as_binary_v2(unsigned char **data, size_t *size, const char *filename) {
+    FILE *file = fopen(filename, "rb");
+    if (file == NULL) {
+        fprintf(stderr, "Cannot open file: %s\n", filename);
+        exit(1);
+    }
+
+    // Determine the file size
+    fseek(file, 0, SEEK_END);
+    *size = ftell(file);
+    fseek(file, 0, SEEK_SET);
+
+    // Allocate pinned memory for data
+    cudaMallocHost((void**)data, *size * sizeof(unsigned char));
+
+    // Read the file into data
+    if (fread(*data, 1, *size, file) != *size) {
+        fprintf(stderr, "Cannot read file: %s\n", filename);
         exit(1);
     }
 

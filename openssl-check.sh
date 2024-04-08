@@ -11,13 +11,25 @@ data_file=$1
 key_file=$2
 iv_file=$3
 
+# Get the extension of the data file
+data_file_extension="${data_file##*.}"
+
 # Read key and IV from files, removing any newlines
 key=$(tr -d '\n' < "$key_file")
 iv=$(tr -d '\n' < "$iv_file")
 
 # Perform the encryption
-openssl enc -aes-128-ctr -in "$data_file" -out openssl_encrypted.bin -K "$key" -iv "$iv" -nosalt
+openssl enc -aes-128-ctr -in "$data_file" -out openssl_encrypted_original.bin -K "$key" -iv "$iv" -nosalt
 echo "OpenSSL encryption complete."
+
+# Write the data file extension and a null terminator to a separate file
+echo -n ".$data_file_extension" > extension.bin
+echo -ne '\0' >> extension.bin
+
+# Concatenate the files together
+cat openssl_encrypted_original.bin extension.bin > openssl_encrypted.bin
+rm openssl_encrypted_original.bin 
+rm extension.bin
 
 # Print the size of the files
 ls -l openssl_encrypted.bin encrypted.bin
