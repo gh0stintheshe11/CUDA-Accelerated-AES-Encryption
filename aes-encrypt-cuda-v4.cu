@@ -12,9 +12,9 @@
         -v1 Shared Memory: IV and expanded key
         -v2 Coalesced Memory Access: In previous code, each thread is accessing a different block of the plaintext and ciphertext arrays. If the blocks are not contiguous in memory, this could slow down the program. This code rearrange the data so that the blocks accessed by threads in the same warp are contiguous in memory.
         -v3 Divergence Avoidance: 
-            -v3.1 aes_ctr_encrypt_kernel(): In the original function, the divergence is caused by the conditional statement if (blockId < numBlocks). This divergence can be avoided by ensuring that the number of threads is a multiple of the number of blocks. This can be done by padding the data to a multiple of the block size.
-            -v3.2 mul(): In this modified version, the if (b & 1) and if (high_bit) conditions are replaced with arithmetic operations. This ensures that all threads in a warp take the same execution path, avoiding divergence.
-        -v4 Stream
+            -v3.1 aes_ctr_encrypt_kernel(): In the original function, the divergence is caused by the conditional statement if (blockId < numBlocks). This divergence can be avoided by ensuring that the number of threads is a multiple of the number of blocks, which means padding the data to a multiple of the block size.
+            -v3.2 mul(): In this modified version, the if (b & 1) and if (high_bit) conditions are replaced with arithmetic operations. This ensures all threads in a warp take the same execution path, avoiding divergence.
+        -v4 Stream: bitch.
 
 */
 
@@ -269,9 +269,6 @@ int main(int argc, char* argv[]) {
 
     // Copy S-box to device constant memory
     cudaMemcpyToSymbol(d_sbox, h_sbox, sizeof(h_sbox));
-        
-    unsigned char *ciphertext;
-    cudaMallocHost((void**)&ciphertext, dataSize * sizeof(unsigned char));
 
     cudaStream_t streams[numStreams];
     for(int i = 0; i < numStreams; i++) {
