@@ -41,3 +41,6 @@ if [ $diff_output -eq 0 ]; then
 else
     echo "$diff_output bytes are different"
 fi
+
+rm openssl_encrypted.bin
+rm encrypted.bin
