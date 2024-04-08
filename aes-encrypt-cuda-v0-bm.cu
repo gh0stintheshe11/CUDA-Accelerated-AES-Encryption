@@ -7,6 +7,7 @@
 #include "utils-cuda.h"
 
 /*
+    For benchmarking
     Base version of CUDA implementation, no special optimization
 */
 
