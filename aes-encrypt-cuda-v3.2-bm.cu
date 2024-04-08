@@ -10,12 +10,11 @@
     Optimization:
         -v1 Constant Memory: S box
         -v1 Shared Memory: IV and expanded key
+        -v1 Pinned Memory: plaintext and ciphertext
         -v2 Coalesced Memory Access: In previous code, each thread is accessing a different block of the plaintext and ciphertext arrays. If the blocks are not contiguous in memory, this could slow down the program. This code rearrange the data so that the blocks accessed by threads in the same warp are contiguous in memory.
         -v3 Divergence Avoidance: 
             -v3.1 aes_ctr_encrypt_kernel(): In the original function, the divergence is caused by the conditional statement if (blockId < numBlocks). This divergence can be avoided by ensuring that the number of threads is a multiple of the number of blocks, which means padding the data to a multiple of the block size.
             -v3.2 mul(): In this modified version, the if (b & 1) and if (high_bit) conditions are replaced with arithmetic operations. This ensures all threads in a warp take the same execution path, avoiding divergence.
-        -v4 Stream: is a bitch.
-
 */
 
 #define AES_KEY_SIZE 16
@@ -162,19 +161,35 @@ __device__ void aes_encrypt_block(unsigned char *input, unsigned char *output, u
 }
 
 __device__ void increment_counter(unsigned char *counter, int increment) {
-    for (int i = AES_BLOCK_SIZE - 1; i >= 0; --i) {
-        int sum = counter[i] + (increment & 0xFF);
+    int carry = increment;
+    for (int i = AES_BLOCK_SIZE - 1; i >= 0; i--) {
+        int sum = counter[i] + carry;
         counter[i] = sum & 0xFF;
-        increment >>= 8;
-        if (increment == 0) {
+        carry = sum >> 8;
+        if (carry == 0) {
             break;
         }
     }
 }
 
-__global__ void aes_ctr_encrypt_kernel(unsigned char *plaintext, unsigned char *ciphertext, unsigned char *expandedKey, unsigned char *iv, int numBlocks, int dataSize, int streamId, int blocksPerStream) {
+__global__ void aes_ctr_encrypt_kernel(unsigned char *plaintext, unsigned char *ciphertext, unsigned char *expandedKey, unsigned char *iv, int numBlocks, int dataSize) {
     // Calculate the unique thread ID within the grid
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
+
+    // Create shared memory arrays for the IV and expanded key
+    __shared__ unsigned char shared_iv[AES_BLOCK_SIZE];
+    __shared__ unsigned char shared_expandedKey[176];
+
+    // Copy the IV and expanded key to shared memory
+    if (threadIdx.x < AES_BLOCK_SIZE) {
+        shared_iv[threadIdx.x] = iv[threadIdx.x];
+    }
+    if (threadIdx.x < 176) {
+        shared_expandedKey[threadIdx.x] = expandedKey[threadIdx.x];
+    }
+
+    // Synchronize to make sure the arrays are fully loaded
+    __syncthreads();
 
     // Define the counter and initialize it with the IV
     unsigned char counter[AES_BLOCK_SIZE];
@@ -186,30 +201,26 @@ __global__ void aes_ctr_encrypt_kernel(unsigned char *plaintext, unsigned char *
     for (int block = 0; block < blocksPerThread; ++block) {
         int blockId = tid + block * gridDim.x * blockDim.x;
 
-        // Calculate the global block ID
-        int globalBlockId = blockId + blocksPerStream * streamId;
-
-        // Skip the iteration if the globalBlockId is out of range
-        if (globalBlockId >= numBlocks) {
+        // Skip the iteration if the blockId is out of range
+        if (blockId >= numBlocks) {
             continue;
         }
 
-        // Copy the IV to the counter
-        memcpy(counter, iv, AES_BLOCK_SIZE);
+        memcpy(counter, shared_iv, AES_BLOCK_SIZE);
 
-        // Increment the counter by the block ID (not the global block ID)
-        increment_counter(counter, globalBlockId);
+        // Increment the counter by the block ID
+        increment_counter(counter, blockId);
+
+        // Calculate the block size
+        int blockSize = (blockId == numBlocks - 1 && dataSize % AES_BLOCK_SIZE != 0) ? dataSize % AES_BLOCK_SIZE : AES_BLOCK_SIZE;
 
         // Encrypt the counter to get the ciphertext block
         unsigned char ciphertextBlock[AES_BLOCK_SIZE];
-        aes_encrypt_block(counter, ciphertextBlock, expandedKey);
+        aes_encrypt_block(counter, ciphertextBlock, shared_expandedKey);
 
         // XOR the plaintext with the ciphertext block
-        for (int i = 0; i < AES_BLOCK_SIZE; ++i) {
-            int index = globalBlockId * AES_BLOCK_SIZE + i;
-            if (index < dataSize) {
-                ciphertext[index] = plaintext[index] ^ ciphertextBlock[i];
-            }
+        for (int i = 0; i < blockSize; ++i) {
+            ciphertext[blockId * AES_BLOCK_SIZE + i] = plaintext[blockId * AES_BLOCK_SIZE + i] ^ ciphertextBlock[i];
         }
     }
 }
@@ -220,8 +231,6 @@ int main(int argc, char* argv[]) {
         printf("Usage: %s <filename>\n", argv[0]);
         return 1;
     }
-
-    const int numStreams = 8;
 
     // Get the file extension
     std::string extension = getFileExtension(argv[1]);
@@ -237,12 +246,11 @@ int main(int argc, char* argv[]) {
 
     size_t dataSize;
     unsigned char* plaintext;
-    unsigned char *ciphertext;  
-    unsigned char *d_plaintext, *d_ciphertext;
-    unsigned char *d_iv[numStreams];
-    unsigned char *d_expandedKey[numStreams];
+    unsigned char *ciphertext;
+    unsigned char *d_plaintext, *d_ciphertext, *d_iv;
+    unsigned char *d_expandedKey;
     // Determine the size of the file and read the plaintext
-    read_file_as_binary_v2(&plaintext, &dataSize, argv[1]);
+    read_file_as_binary_v2(&plaintext, &dataSize, argv[1]); 
 
     // Call the host function to expand the key
     unsigned char expandedKey[176];
@@ -256,47 +264,28 @@ int main(int argc, char* argv[]) {
     dim3 blocksPerGrid((numBlocks + threadsPerBlock.x - 1) / threadsPerBlock.x);
 
     // Allocate device memory
+    cudaMalloc((void **)&d_iv, AES_BLOCK_SIZE * sizeof(unsigned char));
+    cudaMalloc((void **)&d_expandedKey, 176); 
     cudaMalloc((void **)&d_plaintext, dataSize * sizeof(unsigned char));
     cudaMalloc((void **)&d_ciphertext, dataSize * sizeof(unsigned char));
     cudaMallocHost((void**)&ciphertext, dataSize * sizeof(unsigned char));
 
-    for(int i = 0; i < numStreams; i++) {
-        cudaMalloc((void **)&d_iv[i], AES_BLOCK_SIZE * sizeof(unsigned char));
-        cudaMalloc((void **)&d_expandedKey[i], 176);
-        cudaMemcpy(d_iv[i], iv, AES_BLOCK_SIZE * sizeof(unsigned char), cudaMemcpyHostToDevice);
-        cudaMemcpy(d_expandedKey[i], expandedKey, 176, cudaMemcpyHostToDevice);
-    }
-
     // Copy S-box to device constant memory
     cudaMemcpyToSymbol(d_sbox, h_sbox, sizeof(h_sbox));
 
-    cudaStream_t streams[numStreams];
-    for(int i = 0; i < numStreams; i++) {
-        cudaStreamCreate(&streams[i]);
-    }
+    // Copy host memory to device
+    cudaMemcpy(d_plaintext, plaintext, dataSize * sizeof(unsigned char), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_iv, iv, AES_BLOCK_SIZE * sizeof(unsigned char), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_expandedKey, expandedKey, 176, cudaMemcpyHostToDevice); 
 
-    // Calculate the number of blocks processed by each stream
-    int blocksPerStream = (numBlocks + numStreams - 1) / numStreams;
+    // Launch AES-CTR encryption kernel
+    aes_ctr_encrypt_kernel<<<blocksPerGrid, threadsPerBlock>>>(d_plaintext, d_ciphertext, d_expandedKey, d_iv, numBlocks, dataSize);
 
-    for(int i = 0; i < numStreams; i++) {
-        int offset = i * blocksPerStream * AES_BLOCK_SIZE;
-        int blocks = min(blocksPerStream, static_cast<int>(numBlocks - i * blocksPerStream));
-        int size = blocks * AES_BLOCK_SIZE;
+    // Synchronize device
+    cudaDeviceSynchronize();
 
-        // Copy the plaintext to the device
-        cudaMemcpyAsync(&d_plaintext[offset], &plaintext[offset], size, cudaMemcpyHostToDevice, streams[i]);
-
-        // Launch the kernel
-        aes_ctr_encrypt_kernel<<<blocks, threadsPerBlock, 0, streams[i]>>>(&d_plaintext[offset], &d_ciphertext[offset], d_expandedKey[i], d_iv[i], blocks, size, i, blocksPerStream);
-
-        // Copy the ciphertext back to the host
-        cudaMemcpyAsync(&ciphertext[offset], &d_ciphertext[offset], size, cudaMemcpyDeviceToHost, streams[i]);
-    }
-
-    for(int i = 0; i < numStreams; i++) {
-        cudaStreamSynchronize(streams[i]);
-        cudaStreamDestroy(streams[i]);
-    }
+    // Copy device ciphertext back to host
+    cudaMemcpy(ciphertext, d_ciphertext, dataSize * sizeof(unsigned char), cudaMemcpyDeviceToHost);
 
     // Output encoded text to a file
     write_encrypted(ciphertext, dataSize, "encrypted.bin");
@@ -304,12 +293,10 @@ int main(int argc, char* argv[]) {
     // Cleanup
     cudaFree(d_plaintext);
     cudaFree(d_ciphertext);
-    for(int i = 0; i < numStreams; i++) {
-        cudaFree(d_iv[i]);
-        cudaFree(d_expandedKey[i]);
-    }
+    cudaFree(d_iv);
+    cudaFree(d_expandedKey);
     cudaFreeHost(ciphertext);
-    cudaFreeHost(plaintext); 
+    cudaFreeHost(plaintext);
 
     // Get the stop time
     auto stop = std::chrono::high_resolution_clock::now();
