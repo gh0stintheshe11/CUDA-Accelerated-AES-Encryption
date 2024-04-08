@@ -7,14 +7,16 @@
 #include "utils-cuda.h"
 
 /*
-    Base version of CUDA implementation, no special optimization
+    Optimization:
+        -v1 Constant Memory: S box
+        -v1 Shared Memory: IV and expanded key     
 */
 
 #define AES_KEY_SIZE 16
 #define AES_BLOCK_SIZE 16
 
+// Declare fixed data in constant memory
 __constant__ unsigned char d_sbox[256];
-__constant__ unsigned char d_rcon[11];
 
 __device__ unsigned char mul(unsigned char a, unsigned char b) {
     unsigned char p = 0;
@@ -158,44 +160,54 @@ __device__ void aes_encrypt_block(unsigned char *input, unsigned char *output, u
 }
 
 __device__ void increment_counter(unsigned char *counter, int increment) {
-    int value = increment;
+    int carry = increment;
     for (int i = AES_BLOCK_SIZE - 1; i >= 0; i--) {
-        value += counter[i];
-        counter[i] = value & 0xFF;
-        value >>= 8;
+        int sum = counter[i] + carry;
+        counter[i] = sum & 0xFF;
+        carry = sum >> 8;
+        if (carry == 0) {
+            break;
+        }
     }
 }
 
 __global__ void aes_ctr_encrypt_kernel(unsigned char *plaintext, unsigned char *ciphertext, unsigned char *expandedKey, unsigned char *iv, int numBlocks, int dataSize) {
-    // Calculate the global block ID
+
+    // Calculate the unique thread ID within the grid
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
 
-    // Declare shared memory for the ciphertext block
-    __shared__ unsigned char shared_ciphertextBlock[AES_BLOCK_SIZE];
+    // Create shared memory arrays for the IV and expanded key
+    __shared__ unsigned char shared_iv[AES_BLOCK_SIZE];
+    __shared__ unsigned char shared_expandedKey[176];
 
-    // Check if the block is within the number of blocks
-    if (tid < numBlocks) {
-        // Declare a local counter array
-        unsigned char counter[AES_BLOCK_SIZE];
+    // Copy the IV and expanded key to shared memory
+    if (threadIdx.x < AES_BLOCK_SIZE) {
+        shared_iv[threadIdx.x] = iv[threadIdx.x];
+    }
+    if (threadIdx.x < 176) {
+        shared_expandedKey[threadIdx.x] = expandedKey[threadIdx.x];
+    }
 
-        // Copy the IV to the counter
-        for (int i = 0; i < AES_BLOCK_SIZE; ++i) {
-            counter[i] = iv[i];
-        }
+    // Synchronize to make sure the arrays are fully loaded
+    __syncthreads();
 
-        // Increment the counter by the block ID
-        increment_counter(counter, tid);
+    // Define the counter and initialize it with the IV
+    unsigned char counter[AES_BLOCK_SIZE];
+    memcpy(counter, shared_iv, AES_BLOCK_SIZE);
 
-        // Calculate the block size
-        int blockSize = (tid == numBlocks - 1 && dataSize % AES_BLOCK_SIZE != 0) ? dataSize % AES_BLOCK_SIZE : AES_BLOCK_SIZE;
+    // Increment the counter by the block ID
+    increment_counter(counter, tid);
 
-        // Encrypt the counter to get the ciphertext block
-        aes_encrypt_block(counter, shared_ciphertextBlock, expandedKey);
+    // Calculate the block size
+    int blockSize = (tid == numBlocks - 1 && dataSize % AES_BLOCK_SIZE != 0) ? dataSize % AES_BLOCK_SIZE : AES_BLOCK_SIZE;
 
-        // XOR the plaintext with the ciphertext block
-        for (int i = 0; i < blockSize; ++i) {
-            ciphertext[tid * AES_BLOCK_SIZE + i] = plaintext[tid * AES_BLOCK_SIZE + i] ^ shared_ciphertextBlock[i];
-        }
+    // Encrypt the counter to get the ciphertext block
+    unsigned char ciphertextBlock[AES_BLOCK_SIZE];
+    aes_encrypt_block(counter, ciphertextBlock, shared_expandedKey);
+
+    // XOR the plaintext with the ciphertext block
+    for (int i = 0; i < blockSize; ++i) {
+        ciphertext[tid * AES_BLOCK_SIZE + i] = plaintext[tid * AES_BLOCK_SIZE + i] ^ ciphertextBlock[i];
     }
 }
 
@@ -208,6 +220,9 @@ int main(int argc, char* argv[]) {
 
     // Get the file extension
     std::string extension = getFileExtension(argv[1]);
+
+    // Get the start time
+    auto start = std::chrono::high_resolution_clock::now();
 
     // Read the key and IV
     unsigned char key[16];
@@ -240,12 +255,8 @@ int main(int argc, char* argv[]) {
     cudaMalloc((void **)&d_plaintext, dataSize * sizeof(unsigned char));
     cudaMalloc((void **)&d_ciphertext, dataSize * sizeof(unsigned char));
 
-    // Copy S-box and rcon to device constant memory
+    // Copy S-box to device constant memory
     cudaMemcpyToSymbol(d_sbox, h_sbox, sizeof(h_sbox));
-    cudaMemcpyToSymbol(d_rcon, h_rcon, sizeof(h_rcon));
-
-    // Get the start time
-    auto start = std::chrono::high_resolution_clock::now();
 
     // Copy host memory to device
     cudaMemcpy(d_plaintext, plaintext, dataSize * sizeof(unsigned char), cudaMemcpyHostToDevice);
@@ -262,9 +273,6 @@ int main(int argc, char* argv[]) {
     unsigned char *ciphertext = new unsigned char[dataSize];
     cudaMemcpy(ciphertext, d_ciphertext, dataSize * sizeof(unsigned char), cudaMemcpyDeviceToHost);
 
-    // Get the stop time
-    auto stop = std::chrono::high_resolution_clock::now();
-
     // Output encoded text to a file
     write_encrypted(ciphertext, dataSize, "encrypted.bin");
 
@@ -275,6 +283,9 @@ int main(int argc, char* argv[]) {
     cudaFree(d_expandedKey);
     delete[] ciphertext;
     delete[] plaintext; 
+
+    // Get the stop time
+    auto stop = std::chrono::high_resolution_clock::now();
 
     // Calculate the elapsed time and print
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(stop - start);
