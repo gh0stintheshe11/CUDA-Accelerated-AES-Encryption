@@ -14,7 +14,6 @@
         -v3 Divergence Avoidance: 
             -v3.1 aes_ctr_encrypt_kernel(): In the original function, the divergence is caused by the conditional statement if (blockId < numBlocks). This divergence can be avoided by ensuring that the number of threads is a multiple of the number of blocks. This can be done by padding the data to a multiple of the block size.
             -v3.2 mul(): In this modified version, the if (b & 1) and if (high_bit) conditions are replaced with arithmetic operations. This ensures that all threads in a warp take the same execution path, avoiding divergence.
-            -v3.3 
         -v4 Stream
 
 */
