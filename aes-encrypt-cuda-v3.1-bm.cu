@@ -7,6 +7,7 @@
 #include "utils-cuda.h"
 
 /*
+    For benchmarking
     Optimization:
         -v1 Constant Memory: S box
         -v1 Shared Memory: IV and expanded key
