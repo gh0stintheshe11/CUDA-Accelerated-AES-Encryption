@@ -242,13 +242,13 @@ int main(int argc, char* argv[]) {
     read_key_or_iv(key, sizeof(key), "key.txt");
     read_key_or_iv(iv, sizeof(iv), "iv.txt");
 
-    // Determine the size of the file and read the plaintext
     size_t dataSize;
     unsigned char* plaintext;
-    read_file_as_binary_v2(&plaintext, &dataSize, argv[1]);
-
+    unsigned char *ciphertext;
     unsigned char *d_plaintext, *d_ciphertext, *d_iv;
     unsigned char *d_expandedKey;
+    // Determine the size of the file and read the plaintext
+    read_file_as_binary_v2(&plaintext, &dataSize, argv[1]); 
 
     // Call the host function to expand the key
     unsigned char expandedKey[176];
@@ -266,6 +266,7 @@ int main(int argc, char* argv[]) {
     cudaMalloc((void **)&d_expandedKey, 176); 
     cudaMalloc((void **)&d_plaintext, dataSize * sizeof(unsigned char));
     cudaMalloc((void **)&d_ciphertext, dataSize * sizeof(unsigned char));
+    cudaMallocHost((void**)&ciphertext, dataSize * sizeof(unsigned char));
 
     // Copy S-box to device constant memory
     cudaMemcpyToSymbol(d_sbox, h_sbox, sizeof(h_sbox));
@@ -282,8 +283,6 @@ int main(int argc, char* argv[]) {
     cudaDeviceSynchronize();
 
     // Copy device ciphertext back to host
-    unsigned char *ciphertext;
-    cudaMallocHost((void**)&ciphertext, dataSize * sizeof(unsigned char));
     cudaMemcpy(ciphertext, d_ciphertext, dataSize * sizeof(unsigned char), cudaMemcpyDeviceToHost);
 
     // Output encoded text to a file

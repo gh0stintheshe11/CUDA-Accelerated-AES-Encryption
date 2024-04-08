@@ -235,14 +235,14 @@ int main(int argc, char* argv[]) {
     read_key_or_iv(key, sizeof(key), "key.txt");
     read_key_or_iv(iv, sizeof(iv), "iv.txt");
 
-    // Determine the size of the file and read the plaintext
     size_t dataSize;
     unsigned char* plaintext;
-    read_file_as_binary_v2(&plaintext, &dataSize, argv[1]);
-
+    unsigned char *ciphertext;  
     unsigned char *d_plaintext, *d_ciphertext;
     unsigned char *d_iv[numStreams];
     unsigned char *d_expandedKey[numStreams];
+    // Determine the size of the file and read the plaintext
+    read_file_as_binary_v2(&plaintext, &dataSize, argv[1]);
 
     // Call the host function to expand the key
     unsigned char expandedKey[176];
@@ -258,6 +258,7 @@ int main(int argc, char* argv[]) {
     // Allocate device memory
     cudaMalloc((void **)&d_plaintext, dataSize * sizeof(unsigned char));
     cudaMalloc((void **)&d_ciphertext, dataSize * sizeof(unsigned char));
+    cudaMallocHost((void**)&ciphertext, dataSize * sizeof(unsigned char));
 
     for(int i = 0; i < numStreams; i++) {
         cudaMalloc((void **)&d_iv[i], AES_BLOCK_SIZE * sizeof(unsigned char));
