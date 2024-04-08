@@ -103,22 +103,24 @@ size_t preprocess(const char *filename, size_t chunkSize, unsigned char ***chunk
     // Read the file into a buffer
     unsigned char *buffer;
     size_t bufferSize;
-    read_file_as_binary(&buffer, &bufferSize, filename);
+    read_file_as_binary_v2(&buffer, &bufferSize, filename);
 
     // Calculate the number of chunks
     size_t numChunks = (bufferSize + chunkSize - 1) / chunkSize;
 
-    // Allocate memory for the chunks and their sizes
-    *chunks = new unsigned char*[numChunks];
-    *chunkSizes = new size_t[numChunks];
+    // Allocate pinned memory for the chunks and their sizes
+    cudaMallocHost((void***)chunks, numChunks * sizeof(unsigned char*));
+    cudaMallocHost((void**)chunkSizes, numChunks * sizeof(size_t));
 
     // Split the buffer into chunks
     for (size_t i = 0; i < numChunks; i++) {
         // Calculate the size of the current chunk
         size_t currentChunkSize = (i < numChunks - 1) ? chunkSize : (bufferSize % chunkSize);
 
-        // Allocate memory for the current chunk
-        (*chunks)[i] = new unsigned char[currentChunkSize];
+        // Allocate pinned memory for the current chunk
+        cudaMallocHost((void**)&(*chunks)[i], currentChunkSize * sizeof(unsigned char));
+
+        printf("Chunk %zu address: %p\n", i, (*chunks)[i]);  // Print the address of the current chunk
 
         // Copy the data from the buffer to the current chunk
         memcpy((*chunks)[i], buffer + i * chunkSize, currentChunkSize);
@@ -128,7 +130,7 @@ size_t preprocess(const char *filename, size_t chunkSize, unsigned char ***chunk
     }
 
     // Free the buffer
-    delete[] buffer;
+    cudaFreeHost(buffer);
 
     return numChunks;
 }
@@ -143,6 +145,31 @@ void write_encrypted(const unsigned char *ciphertext, size_t size, const char *f
         fprintf(stderr, "Error writing to file: %s\n", filename);
         exit(1);
     }
+    fclose(file);
+}
+
+void write_encrypted_v2(unsigned char* ciphertext, size_t size, const char* filename) {
+    // Open the file in append mode
+    FILE* file = fopen(filename, "ab");
+
+    // Check if the file was correctly opened
+    if (file == NULL) {
+        printf("Error opening file: %s\n", filename);
+        return;
+    }
+
+    // Write the ciphertext to the file
+    size_t written = fwrite(ciphertext, sizeof(unsigned char), size, file);
+
+    // Check if the data was correctly written
+    if (written != size) {
+        printf("Error writing data to file: %s\n", filename);
+    }
+
+    // Print debug information
+    printf("Written %lu bytes to file: %s\n", written, filename);
+
+    // Close the file
     fclose(file);
 }
 
