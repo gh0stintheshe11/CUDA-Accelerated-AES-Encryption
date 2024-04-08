@@ -301,7 +301,7 @@ int main(int argc, char* argv[]) {
 
     // Calculate the elapsed time and print
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(stop - start);
-    std::cout << "IKO time: " << duration.count() << " ms\n";
+    std::cout << "time: " << duration.count() << " ms\n";
 
     // After encrypting, append the file extension to the encrypted data
     appendFileExtension("encrypted.bin", extension);
