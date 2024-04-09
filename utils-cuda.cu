@@ -196,3 +196,239 @@ void appendFileExtension(const std::string& filename, const std::string& extensi
         std::cerr << "Failed to open file: " << filename << std::endl;
     }
 }
+
+__device__ unsigned char mul(unsigned char a, unsigned char b) {
+  unsigned char p = 0;
+  unsigned char high_bit_mask = 0x80;
+  unsigned char high_bit = 0;
+  unsigned char modulo = 0x1B; /* x^8 + x^4 + x^3 + x + 1 */
+
+  for (int i = 0; i < 8; i++) {
+    if (b & 1) {
+      p ^= a;
+    }
+
+    high_bit = a & high_bit_mask;
+    a <<= 1;
+    if (high_bit) {
+      a ^= modulo;
+    }
+    b >>= 1;
+  }
+
+  return p;
+}
+
+void KeyExpansionHost(unsigned char *key, unsigned char *expandedKey) {
+  int i = 0;
+  while (i < 4) {
+    for (int j = 0; j < 4; j++) {
+      expandedKey[i * 4 + j] = key[i * 4 + j];
+    }
+    i++;
+  }
+
+  int rconIteration = 1;
+  unsigned char temp[4];
+
+  while (i < 44) {
+    for (int j = 0; j < 4; j++) {
+      temp[j] = expandedKey[(i - 1) * 4 + j];
+    }
+
+    if (i % 4 == 0) {
+      unsigned char k = temp[0];
+      for (int j = 0; j < 3; j++) {
+        temp[j] = temp[j + 1];
+      }
+      temp[3] = k;
+
+      for (int j = 0; j < 4; j++) {
+        // Use the host-accessible arrays
+        temp[j] = h_sbox[temp[j]] ^ (j == 0 ? h_rcon[rconIteration++] : 0);
+      }
+    }
+
+    for (int j = 0; j < 4; j++) {
+      expandedKey[i * 4 + j] = expandedKey[(i - 4) * 4 + j] ^ temp[j];
+    }
+    i++;
+  }
+}
+
+__device__ void SubBytes(unsigned char *state, unsigned char *d_sbox) {
+  for (int i = 0; i < 16; ++i) {
+    state[i] = d_sbox[state[i]];
+  }
+}
+
+__device__ void ShiftRows(unsigned char *state) {
+  unsigned char tmp[16];
+
+  /* Column 1 */
+  tmp[0] = state[0];
+  tmp[1] = state[5];
+  tmp[2] = state[10];
+  tmp[3] = state[15];
+  /* Column 2 */
+  tmp[4] = state[4];
+  tmp[5] = state[9];
+  tmp[6] = state[14];
+  tmp[7] = state[3];
+  /* Column 3 */
+  tmp[8] = state[8];
+  tmp[9] = state[13];
+  tmp[10] = state[2];
+  tmp[11] = state[7];
+  /* Column 4 */
+  tmp[12] = state[12];
+  tmp[13] = state[1];
+  tmp[14] = state[6];
+  tmp[15] = state[11];
+
+  memcpy(state, tmp, 16);
+}
+
+__device__ void MixColumns(unsigned char *state) {
+  unsigned char tmp[16];
+
+  for (int i = 0; i < 4; ++i) {
+    tmp[i * 4] =
+        (unsigned char)(mul(0x02, state[i * 4]) ^ mul(0x03, state[i * 4 + 1]) ^
+                        state[i * 4 + 2] ^ state[i * 4 + 3]);
+    tmp[i * 4 + 1] =
+        (unsigned char)(state[i * 4] ^ mul(0x02, state[i * 4 + 1]) ^
+                        mul(0x03, state[i * 4 + 2]) ^ state[i * 4 + 3]);
+    tmp[i * 4 + 2] = (unsigned char)(state[i * 4] ^ state[i * 4 + 1] ^
+                                     mul(0x02, state[i * 4 + 2]) ^
+                                     mul(0x03, state[i * 4 + 3]));
+    tmp[i * 4 + 3] =
+        (unsigned char)(mul(0x03, state[i * 4]) ^ state[i * 4 + 1] ^
+                        state[i * 4 + 2] ^ mul(0x02, state[i * 4 + 3]));
+  }
+
+  memcpy(state, tmp, 16);
+}
+
+__device__ void AddRoundKey(unsigned char *state,
+                            const unsigned char *roundKey) {
+  for (int i = 0; i < 16; ++i) {
+    state[i] ^= roundKey[i];
+  }
+}
+
+__device__ void aes_encrypt_block(unsigned char *input, unsigned char *output,
+                                  unsigned char *expandedKey,
+                                  unsigned char *d_sbox) {
+  unsigned char state[16];
+
+  // Copy the input to the state array
+  for (int i = 0; i < 16; ++i) {
+    state[i] = input[i];
+  }
+
+  // Add the round key to the state
+  AddRoundKey(state, expandedKey);
+
+  // Perform 9 rounds of substitutions, shifts, mixes, and round key additions
+  for (int round = 1; round < 10; ++round) {
+    SubBytes(state, d_sbox);
+    ShiftRows(state);
+    MixColumns(state);
+    AddRoundKey(state, expandedKey + round * 16);
+  }
+
+  // Perform the final round (without MixColumns)
+  SubBytes(state, d_sbox);
+  ShiftRows(state);
+  AddRoundKey(state, expandedKey + 10 * 16);
+
+  // Copy the state to the output
+  for (int i = 0; i < 16; ++i) {
+    output[i] = state[i];
+  }
+}
+
+__device__ void increment_counter(unsigned char *counter, int increment) {
+  int carry = increment;
+  for (int i = AES_BLOCK_SIZE - 1; i >= 0; i--) {
+    int sum = counter[i] + carry;
+    counter[i] = sum & 0xFF;
+    carry = sum >> 8;
+    if (carry == 0) {
+      break;
+    }
+  }
+}
+
+__device__ unsigned char mul_v2(unsigned char a, unsigned char b) {
+  unsigned char p = 0;
+  unsigned char high_bit_mask = 0x80;
+  unsigned char high_bit = 0;
+  unsigned char modulo = 0x1B; /* x^8 + x^4 + x^3 + x + 1 */
+
+  for (int i = 0; i < 8; i++) {
+    p ^= a * (b & 1); // Use arithmetic instead of conditional
+
+    high_bit = a & high_bit_mask;
+    a <<= 1;
+    a ^= modulo * (high_bit >> 7); // Use arithmetic instead of conditional
+    b >>= 1;
+  }
+
+  return p;
+}
+
+__device__ void MixColumns_v2(unsigned char *state) {
+  unsigned char tmp[16];
+
+  for (int i = 0; i < 4; ++i) {
+    tmp[i * 4] = (unsigned char)(mul_v2(0x02, state[i * 4]) ^
+                                 mul_v2(0x03, state[i * 4 + 1]) ^
+                                 state[i * 4 + 2] ^ state[i * 4 + 3]);
+    tmp[i * 4 + 1] =
+        (unsigned char)(state[i * 4] ^ mul_v2(0x02, state[i * 4 + 1]) ^
+                        mul_v2(0x03, state[i * 4 + 2]) ^ state[i * 4 + 3]);
+    tmp[i * 4 + 2] = (unsigned char)(state[i * 4] ^ state[i * 4 + 1] ^
+                                     mul_v2(0x02, state[i * 4 + 2]) ^
+                                     mul_v2(0x03, state[i * 4 + 3]));
+    tmp[i * 4 + 3] =
+        (unsigned char)(mul_v2(0x03, state[i * 4]) ^ state[i * 4 + 1] ^
+                        state[i * 4 + 2] ^ mul_v2(0x02, state[i * 4 + 3]));
+  }
+
+  memcpy(state, tmp, 16);
+}
+
+__device__ void aes_encrypt_block_v2(unsigned char *input,
+                                     unsigned char *output,
+                                     unsigned char *expandedKey,
+                                     unsigned char *d_sbox) {
+  unsigned char state[16];
+
+  // Copy the input to the state array
+  for (int i = 0; i < 16; ++i) {
+    state[i] = input[i];
+  }
+
+  // Add the round key to the state
+  AddRoundKey(state, expandedKey);
+
+  // Perform 9 rounds of substitutions, shifts, mixes, and round key additions
+  for (int round = 1; round < 10; ++round) {
+    SubBytes(state, d_sbox);
+    ShiftRows(state);
+    MixColumns_v2(state);
+    AddRoundKey(state, expandedKey + round * 16);
+  }
+
+  // Perform the final round (without MixColumns_v2)
+  SubBytes(state, d_sbox);
+  ShiftRows(state);
+  AddRoundKey(state, expandedKey + 10 * 16);
+
+  // Copy the state to the output
+  for (int i = 0; i < 16; ++i) {
+    output[i] = state[i];
+  }
+}
