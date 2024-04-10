@@ -18,9 +18,8 @@
             -v3.2 mul(): In this modified version, the if (b & 1) and if (high_bit) conditions are replaced with arithmetic operations. This ensures all threads in a warp take the same execution path, avoiding divergence.
         -v4 Loop Unrolling and Intrinsic function
             1. Loop Unrolling: add loop unrolling to small(eliminating loop control overhead)/compute-focused(allow for more instruction-level parallelism) loops not large(increasing the register pressure)/memory-focused(lead to instruction cache misses) loops. mul(), SubBytes(), MixColumns(), AddRoundKey(), aes_encrypt_block(): 9_rounds and state_to_output, aes_ctr_encrypt_kernel(): XOR.
-            2. Intrinsic Function: use fast build-in function __ldg() to load and cache iv and expandedkey.
+            2. Intrinsic Function: use fast build-in function __ldg() to load and cache expanded key.
         -v5 Stream
-
 */
 
 #define AES_KEY_SIZE 16
@@ -221,7 +220,7 @@ __device__ void increment_counter(unsigned char *counter, int increment) {
     }
 }
 
-__global__ void aes_ctr_encrypt_kernel(unsigned char *plaintext, unsigned char *ciphertext, unsigned char *expandedKey, unsigned char *iv, int numBlocks, int dataSize) {
+__global__ void aes_ctr_encrypt_kernel(unsigned char *plaintext, unsigned char *ciphertext, unsigned char *expandedKey, unsigned char *iv, int numBlocks, int dataSize, size_t totalBlocks) {
     // Calculate the unique thread ID within the grid
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -231,14 +230,13 @@ __global__ void aes_ctr_encrypt_kernel(unsigned char *plaintext, unsigned char *
 
     // Copy the IV and expanded key to shared memory
     if (threadIdx.x < AES_BLOCK_SIZE) {
-        shared_iv[threadIdx.x] = __ldg(&iv[threadIdx.x]);
+        shared_iv[threadIdx.x] = iv[threadIdx.x];
     }
     if (threadIdx.x < 176) {
         shared_expandedKey[threadIdx.x] =  __ldg(&expandedKey[threadIdx.x]);
     }
 
-    // Synchronize to make sure the arrays are fully loaded
-    __syncthreads();
+    __syncthreads(); // Ensure IV and key are fully loaded
 
     // Define the counter and initialize it with the IV
     unsigned char counter[AES_BLOCK_SIZE];
@@ -248,12 +246,13 @@ __global__ void aes_ctr_encrypt_kernel(unsigned char *plaintext, unsigned char *
 
     // Process multiple blocks of plaintext/ciphertext
     for (int block = 0; block < blocksPerThread; ++block) {
+        // Calculate the actual number of blocks processed by all previous threads, blocks, and streams
         int blockId = tid + block * gridDim.x * blockDim.x;
 
         memcpy(counter, shared_iv, AES_BLOCK_SIZE);
 
-        // Increment the counter by the block ID
-        increment_counter(counter, blockId);
+        // Increment the counter by the actual number of blocks
+        increment_counter(counter, blockId - totalBlocks);
 
         // Calculate the block size
         int blockSize = (blockId == numBlocks - 1 && dataSize % AES_BLOCK_SIZE != 0) ? dataSize % AES_BLOCK_SIZE : AES_BLOCK_SIZE;
@@ -266,6 +265,15 @@ __global__ void aes_ctr_encrypt_kernel(unsigned char *plaintext, unsigned char *
         #pragma unroll
         for (int i = 0; i < blockSize; ++i) {
             ciphertext[blockId * AES_BLOCK_SIZE + i] = plaintext[blockId * AES_BLOCK_SIZE + i] ^ ciphertextBlock[i];
+        }
+    }
+}
+
+// Function to increment the IV
+void increment_iv(unsigned char* iv, size_t increment) {
+    for (size_t i = 0; i < increment; ++i) {
+        for (int j = AES_BLOCK_SIZE - 1; j >= 0; --j) {
+            if (++iv[j] != 0) break; // Stop at the first non-overflowed byte
         }
     }
 }
@@ -340,13 +348,23 @@ int main(int argc, char* argv[]) {
     size_t partSize = (dataSize + 3) / 4;
     
     // Execute the kernel using streams
+    size_t totalBlocks = 0; // Total number of blocks processed by all previous streams
     for (int i = 0; i < 4; ++i) {
         size_t start = i * partSize;
         size_t end = min((i + 1) * partSize, dataSize);
         size_t size = end - start;
         size_t numBlocks = (size + AES_BLOCK_SIZE - 1) / AES_BLOCK_SIZE;
         dim3 blocksPerGrid((numBlocks + threadsPerBlock.x - 1) / threadsPerBlock.x);
-        aes_ctr_encrypt_kernel<<<blocksPerGrid, threadsPerBlock, 0, stream[i]>>>(d_plaintext + start, d_ciphertext + start, d_expandedKey[i], d_iv[i], numBlocks, size);
+
+        // Increment the IV for this stream
+        unsigned char iv_for_this_stream[AES_BLOCK_SIZE];
+        memcpy(iv_for_this_stream, iv, AES_BLOCK_SIZE);
+        increment_iv(iv_for_this_stream, totalBlocks); // Increment by the total number of blocks
+        cudaMemcpy(d_iv[i], iv_for_this_stream, AES_BLOCK_SIZE * sizeof(unsigned char), cudaMemcpyHostToDevice);
+
+        aes_ctr_encrypt_kernel<<<blocksPerGrid, threadsPerBlock, 0, stream[i]>>>(d_plaintext + start, d_ciphertext + start, d_expandedKey[i], d_iv[i], numBlocks, size, totalBlocks);
+
+        totalBlocks += numBlocks; // Update the total number of blocks after the kernel launch
     }
     
     // Synchronize all streams
