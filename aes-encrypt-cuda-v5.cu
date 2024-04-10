@@ -18,9 +18,8 @@
             -v3.2 mul(): In this modified version, the if (b & 1) and if (high_bit) conditions are replaced with arithmetic operations. This ensures all threads in a warp take the same execution path, avoiding divergence.
         -v4 Loop Unrolling and Intrinsic function
             1. Loop Unrolling: add loop unrolling to small(eliminating loop control overhead)/compute-focused(allow for more instruction-level parallelism) loops not large(increasing the register pressure)/memory-focused(lead to instruction cache misses) loops. mul(), SubBytes(), MixColumns(), AddRoundKey(), aes_encrypt_block(): 9_rounds and state_to_output, aes_ctr_encrypt_kernel(): XOR.
-            2. Intrinsic Function: use fast build-in function __ldg() to load and cache iv and expandedkey.
+            2. Intrinsic Function: use fast build-in function __ldg() to load and cache expanded key.
         -v5 Stream
-
 */
 
 #define AES_KEY_SIZE 16
@@ -221,7 +220,7 @@ __device__ void increment_counter(unsigned char *counter, int increment) {
     }
 }
 
-__global__ void aes_ctr_encrypt_kernel(unsigned char *plaintext, unsigned char *ciphertext, unsigned char *expandedKey, unsigned char *iv, int numBlocks, int dataSize) {
+__global__ void aes_ctr_encrypt_kernel(unsigned char *plaintext, unsigned char *ciphertext, unsigned char *expandedKey, unsigned char *iv, int numBlocks, int dataSize, size_t totalBlocks) {
     // Calculate the unique thread ID within the grid
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -231,14 +230,13 @@ __global__ void aes_ctr_encrypt_kernel(unsigned char *plaintext, unsigned char *
 
     // Copy the IV and expanded key to shared memory
     if (threadIdx.x < AES_BLOCK_SIZE) {
-        shared_iv[threadIdx.x] = __ldg(&iv[threadIdx.x]);
+        shared_iv[threadIdx.x] = iv[threadIdx.x];
     }
     if (threadIdx.x < 176) {
         shared_expandedKey[threadIdx.x] =  __ldg(&expandedKey[threadIdx.x]);
     }
 
-    // Synchronize to make sure the arrays are fully loaded
-    __syncthreads();
+    __syncthreads(); // Ensure IV and key are fully loaded
 
     // Define the counter and initialize it with the IV
     unsigned char counter[AES_BLOCK_SIZE];
@@ -248,15 +246,16 @@ __global__ void aes_ctr_encrypt_kernel(unsigned char *plaintext, unsigned char *
 
     // Process multiple blocks of plaintext/ciphertext
     for (int block = 0; block < blocksPerThread; ++block) {
+        // Calculate the actual number of blocks processed by all previous threads, blocks, and streams
         int blockId = tid + block * gridDim.x * blockDim.x;
 
         memcpy(counter, shared_iv, AES_BLOCK_SIZE);
 
-        // Increment the counter by the block ID
-        increment_counter(counter, blockId);
+        // Increment the counter by the actual number of blocks
+        increment_counter(counter, blockId); // Increment by blockId instead of blockId - totalBlocks
 
         // Calculate the block size
-        int blockSize = (blockId == numBlocks - 1 && dataSize % AES_BLOCK_SIZE != 0) ? dataSize % AES_BLOCK_SIZE : AES_BLOCK_SIZE;
+        int blockSize = AES_BLOCK_SIZE;
 
         // Encrypt the counter to get the ciphertext block
         unsigned char ciphertextBlock[AES_BLOCK_SIZE];
@@ -265,8 +264,21 @@ __global__ void aes_ctr_encrypt_kernel(unsigned char *plaintext, unsigned char *
         // XOR the plaintext with the ciphertext block
         #pragma unroll
         for (int i = 0; i < blockSize; ++i) {
-            ciphertext[blockId * AES_BLOCK_SIZE + i] = plaintext[blockId * AES_BLOCK_SIZE + i] ^ ciphertextBlock[i];
+            if (blockId * AES_BLOCK_SIZE + i < dataSize) { // Ensure that only the correct number of bytes are included in the final ciphertext
+                ciphertext[blockId * AES_BLOCK_SIZE + i] = plaintext[blockId * AES_BLOCK_SIZE + i] ^ ciphertextBlock[i];
+            }
         }
+    }
+}
+
+// Function to increment the IV
+void increment_iv(unsigned char* iv, size_t increment) {
+    size_t i = AES_BLOCK_SIZE - 1;
+    while (increment > 0) {
+        size_t sum = iv[i] + (increment & 0xFF); // Add the least significant byte of increment to iv[i]
+        iv[i] = sum & 0xFF; // Store the least significant byte of the sum in iv[i]
+        increment = (increment >> 8) | (sum >> 8); // Carry the overflow to the next byte
+        --i;
     }
 }
 
@@ -276,6 +288,8 @@ int main(int argc, char* argv[]) {
         printf("Usage: %s <filename>\n", argv[0]);
         return 1;
     }
+
+    int numStream = 16;
 
     // Get the file extension
     std::string extension = getFileExtension(argv[1]);
@@ -315,12 +329,10 @@ int main(int argc, char* argv[]) {
     // Copy S-box to device constant memory
     cudaMemcpyToSymbol(d_sbox, h_sbox, sizeof(h_sbox));
 
-    ///////////////////////////////////////
-
     // Allocate device memory for each stream
-    unsigned char *d_iv[4];
-    unsigned char *d_expandedKey[4];
-    for (int i = 0; i < 4; ++i) {
+    unsigned char *d_iv[numStream];
+    unsigned char *d_expandedKey[numStream];
+    for (int i = 0; i < numStream; ++i) {
         cudaMalloc((void **)&d_iv[i], AES_BLOCK_SIZE * sizeof(unsigned char));
         cudaMalloc((void **)&d_expandedKey[i], 176);
         cudaMemcpy(d_iv[i], iv, AES_BLOCK_SIZE * sizeof(unsigned char), cudaMemcpyHostToDevice);
@@ -331,33 +343,41 @@ int main(int argc, char* argv[]) {
     cudaMemcpy(d_plaintext, plaintext, dataSize * sizeof(unsigned char), cudaMemcpyHostToDevice);
 
     // Define four CUDA streams
-    cudaStream_t stream[4];
-    for (int i = 0; i < 4; ++i) {
+    cudaStream_t stream[numStream];
+    for (int i = 0; i < numStream; ++i) {
         cudaStreamCreate(&stream[i]);
     }
 
     // Divide the data into four parts
-    size_t partSize = (dataSize + 3) / 4;
+    size_t partSize = (numBlocks + numStream - 1) / numStream * AES_BLOCK_SIZE;
     
     // Execute the kernel using streams
-    for (int i = 0; i < 4; ++i) {
+    size_t totalBlocks = 0; // Total number of blocks processed by all previous streams
+    for (int i = 0; i < numStream; ++i) {
         size_t start = i * partSize;
         size_t end = min((i + 1) * partSize, dataSize);
         size_t size = end - start;
-        size_t numBlocks = (size + AES_BLOCK_SIZE - 1) / AES_BLOCK_SIZE;
+        size_t numBlocks = size / AES_BLOCK_SIZE;
         dim3 blocksPerGrid((numBlocks + threadsPerBlock.x - 1) / threadsPerBlock.x);
-        aes_ctr_encrypt_kernel<<<blocksPerGrid, threadsPerBlock, 0, stream[i]>>>(d_plaintext + start, d_ciphertext + start, d_expandedKey[i], d_iv[i], numBlocks, size);
+
+        // Increment the IV for this stream
+        unsigned char iv_for_this_stream[AES_BLOCK_SIZE];
+        memcpy(iv_for_this_stream, iv, AES_BLOCK_SIZE);
+        increment_iv(iv_for_this_stream, totalBlocks); // Increment by the total number of blocks
+        cudaMemcpy(d_iv[i], iv_for_this_stream, AES_BLOCK_SIZE * sizeof(unsigned char), cudaMemcpyHostToDevice);
+
+        aes_ctr_encrypt_kernel<<<blocksPerGrid, threadsPerBlock, 0, stream[i]>>>(d_plaintext + start, d_ciphertext + start, d_expandedKey[i], d_iv[i], numBlocks, size, totalBlocks);
+
+        totalBlocks += numBlocks; // Update the total number of blocks after the kernel launch
     }
-    
-    // Synchronize all streams
-    for (int i = 0; i < 4; ++i) {
+
+    // Synchronize each stream individually, but after all streams have been launched
+    for (int i = 0; i < numStream; ++i) {
         cudaStreamSynchronize(stream[i]);
     }
 
     // Copy data back to CPU without using streams
     cudaMemcpy(ciphertext, d_ciphertext, dataSize * sizeof(unsigned char), cudaMemcpyDeviceToHost);
-    
-    ///////////////////////////////////////
 
     // Output encoded text to a file
     write_encrypted(ciphertext, dataSize, "encrypted.bin");
@@ -366,7 +386,7 @@ int main(int argc, char* argv[]) {
     cudaFree(d_plaintext);
     cudaFree(d_ciphertext);
     // Cleanup
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < numStream; ++i) {
         cudaFree(d_iv[i]);
         cudaFree(d_expandedKey[i]);
     }
@@ -385,142 +405,3 @@ int main(int argc, char* argv[]) {
     
     return 0;
 }
-
-/*
-int main(int argc, char* argv[]) {
-    // Check if filename is provided
-    if (argc < 2) {
-        printf("Usage: %s <filename>\n", argv[0]);
-        return 1;
-    }
-
-    // Get the file extension
-    std::string extension = getFileExtension(argv[1]);
-
-    // Get the start time
-    auto start = std::chrono::high_resolution_clock::now();
-
-    // Read the key and IV
-    unsigned char key[16];
-    unsigned char iv[16];
-    read_key_or_iv(key, sizeof(key), "key.txt");
-    read_key_or_iv(iv, sizeof(iv), "iv.txt");
-
-    // Preprocess the data into chunks
-    unsigned char **chunks;
-    size_t *chunkSizes;
-    size_t chunkSize = 50*1024*1024; // Set chunks size to n MB
-    printf("Preprocessing...\n");
-    size_t numChunks = preprocess(argv[1], chunkSize, &chunks, &chunkSizes);
-    printf("Preprocessing done. Number of chunks: %zu\n", numChunks);
-
-    // Call the host function to expand the key
-    unsigned char expandedKey[176];
-    KeyExpansionHost(key, expandedKey);
-
-    // Define the size of the grid and the blocks
-    dim3 threadsPerBlock(256); // Use a reasonable number of threads per block
-    dim3 blocksPerGrid((numChunks + threadsPerBlock.x - 1) / threadsPerBlock.x);
-
-    // Allocate device memory
-    unsigned char *d_expandedKey;
-    cudaMalloc((void **)&d_expandedKey, 176); 
-
-    unsigned char *d_iv;
-    cudaMalloc((void **)&d_iv, AES_BLOCK_SIZE * sizeof(unsigned char));
-    cudaMemcpy(d_iv, iv, AES_BLOCK_SIZE * sizeof(unsigned char), cudaMemcpyHostToDevice);
-
-    // Copy S-box to device constant memory
-    cudaMemcpyToSymbol(d_sbox, h_sbox, sizeof(h_sbox));
-
-    // Process each chunk
-    printf("Processing chunks...\n");
-    size_t totalSize = 0;
-
-    // Define the number of streams
-    const int numStreams = 4;
-    cudaStream_t streams[numStreams];
-    for (int i = 0; i < numStreams; i++) {
-        cudaStreamCreate(&streams[i]);
-    }
-
-    // Calculate the counter increment for each chunk
-    unsigned int counterIncrement = (chunkSize + AES_BLOCK_SIZE - 1) / AES_BLOCK_SIZE;
-
-    for (size_t i = 0; i < numChunks; i++) {
-        printf("Processing chunk %zu...\n", i);
-        // Calculate the number of AES blocks needed for the current chunk
-        size_t numBlocks = (chunkSizes[i] + AES_BLOCK_SIZE - 1) / AES_BLOCK_SIZE;
-        unsigned char *d_plaintext, *d_ciphertext, *d_iv;
-        cudaMalloc((void **)&d_iv, AES_BLOCK_SIZE * sizeof(unsigned char));
-        cudaMalloc((void **)&d_plaintext, chunkSizes[i] * sizeof(unsigned char));
-        cudaMalloc((void **)&d_ciphertext, chunkSizes[i] * sizeof(unsigned char));
-
-        // Choose a stream
-        cudaStream_t stream = streams[i % numStreams];
-
-        // Copy the current chunk to device memory
-        cudaMemcpyAsync(d_plaintext, chunks[i], chunkSizes[i] * sizeof(unsigned char), cudaMemcpyHostToDevice, stream);
-
-        // Update the counter in the IV
-        unsigned int* counter = (unsigned int*)(iv + AES_BLOCK_SIZE - 4);
-        *counter += i * counterIncrement;
-
-        // Copy the updated IV to device memory
-        cudaMemcpyAsync(d_iv, iv, AES_BLOCK_SIZE * sizeof(unsigned char), cudaMemcpyHostToDevice, stream);
-
-        // Copy the updated IV to device memory
-        cudaMemcpy(d_iv, iv, AES_BLOCK_SIZE * sizeof(unsigned char), cudaMemcpyHostToDevice);
-
-        // Call the encryption kernel
-        aes_ctr_encrypt_kernel<<<blocksPerGrid, threadsPerBlock, 0, stream>>>(d_plaintext, d_ciphertext, d_expandedKey, d_iv, numBlocks, chunkSizes[i]);
-
-        // Copy the encrypted data back to host memory
-        cudaMemcpyAsync(chunks[i], d_ciphertext, chunkSizes[i] * sizeof(unsigned char), cudaMemcpyDeviceToHost, stream);
-
-        // Free the device memory for the current chunk
-        cudaFree(d_plaintext);
-        cudaFree(d_ciphertext);
-        cudaFree(d_iv);
-        printf("Chunk %zu processed. Size: %zu bytes\n", i, chunkSizes[i]);
-        totalSize += chunkSizes[i];
-    }
-    printf("All chunks processed. Total size: %zu bytes\n", totalSize);
-
-    // Wait for all streams to finish
-    for (int i = 0; i < numStreams; i++) {
-        cudaStreamSynchronize(streams[i]);
-    }
-
-    // Output encoded text to a file
-    printf("Writing encrypted data...\n");
-    for (size_t i = 0; i < numChunks; i++) {
-        write_encrypted_v2(chunks[i], chunkSizes[i], "encrypted.bin");
-    }
-    printf("Encrypted data written.\n");
-
-    // Cleanup
-    cudaFree(d_expandedKey);
-    for (size_t i = 0; i < numChunks; i++) {
-        cudaFreeHost(chunks[i]);
-    }
-    cudaFreeHost(chunks);
-    cudaFreeHost(chunkSizes);
-    // Destroy the streams
-    for (int i = 0; i < numStreams; i++) {
-        cudaStreamDestroy(streams[i]);
-    }
-
-    // Get the stop time
-    auto stop = std::chrono::high_resolution_clock::now();
-
-    // Calculate the elapsed time and print
-    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(stop - start);
-    std::cout << "time: " << duration.count() << " ms\n";
-
-    // After encrypting, append the file extension to the encrypted data
-    appendFileExtension("encrypted.bin", extension);
-    
-    return 0;
-}
-*/
