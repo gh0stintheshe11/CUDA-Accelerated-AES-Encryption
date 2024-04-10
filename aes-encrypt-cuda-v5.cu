@@ -369,8 +369,11 @@ int main(int argc, char* argv[]) {
         aes_ctr_encrypt_kernel<<<blocksPerGrid, threadsPerBlock, 0, stream[i]>>>(d_plaintext + start, d_ciphertext + start, d_expandedKey[i], d_iv[i], numBlocks, size, totalBlocks);
 
         totalBlocks += numBlocks; // Update the total number of blocks after the kernel launch
+    }
 
-        cudaStreamSynchronize(stream[i]); // Synchronize each stream individually
+    // Synchronize each stream individually, but after all streams have been launched
+    for (int i = 0; i < numStream; ++i) {
+        cudaStreamSynchronize(stream[i]);
     }
 
     // Copy data back to CPU without using streams
