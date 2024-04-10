@@ -252,10 +252,10 @@ __global__ void aes_ctr_encrypt_kernel(unsigned char *plaintext, unsigned char *
         memcpy(counter, shared_iv, AES_BLOCK_SIZE);
 
         // Increment the counter by the actual number of blocks
-        increment_counter(counter, blockId - totalBlocks);
+        increment_counter(counter, blockId); // Increment by blockId instead of blockId - totalBlocks
 
         // Calculate the block size
-        int blockSize = (blockId == numBlocks - 1 && dataSize % AES_BLOCK_SIZE != 0) ? dataSize % AES_BLOCK_SIZE : AES_BLOCK_SIZE;
+        int blockSize = AES_BLOCK_SIZE;
 
         // Encrypt the counter to get the ciphertext block
         unsigned char ciphertextBlock[AES_BLOCK_SIZE];
@@ -264,7 +264,9 @@ __global__ void aes_ctr_encrypt_kernel(unsigned char *plaintext, unsigned char *
         // XOR the plaintext with the ciphertext block
         #pragma unroll
         for (int i = 0; i < blockSize; ++i) {
-            ciphertext[blockId * AES_BLOCK_SIZE + i] = plaintext[blockId * AES_BLOCK_SIZE + i] ^ ciphertextBlock[i];
+            if (blockId * AES_BLOCK_SIZE + i < dataSize) { // Ensure that only the correct number of bytes are included in the final ciphertext
+                ciphertext[blockId * AES_BLOCK_SIZE + i] = plaintext[blockId * AES_BLOCK_SIZE + i] ^ ciphertextBlock[i];
+            }
         }
     }
 }
@@ -345,7 +347,7 @@ int main(int argc, char* argv[]) {
     }
 
     // Divide the data into four parts
-    size_t partSize = (dataSize + 3) / 4;
+    size_t partSize = (numBlocks + 3) / 4 * AES_BLOCK_SIZE;
     
     // Execute the kernel using streams
     size_t totalBlocks = 0; // Total number of blocks processed by all previous streams
@@ -353,7 +355,7 @@ int main(int argc, char* argv[]) {
         size_t start = i * partSize;
         size_t end = min((i + 1) * partSize, dataSize);
         size_t size = end - start;
-        size_t numBlocks = (size + AES_BLOCK_SIZE - 1) / AES_BLOCK_SIZE;
+        size_t numBlocks = size / AES_BLOCK_SIZE;
         dim3 blocksPerGrid((numBlocks + threadsPerBlock.x - 1) / threadsPerBlock.x);
 
         // Increment the IV for this stream
