@@ -11,7 +11,8 @@
         -v1 Constant Memory: S box
         -v1 Shared Memory: IV and expanded key
         -v1 Pinned Memory: plaintext and ciphertext
-        -v2 Coalesced Memory Access: In previous code, each thread is accessing a different block of the plaintext and ciphertext arrays. If the blocks are not contiguous in memory, this could slow down the program. This code rearrange the data so that the blocks accessed by threads in the same warp are contiguous in memory.
+        -v2 Coalesced Memory Access: 
+            In previous code, each thread is accessing a different block of the plaintext and ciphertext arrays. If the blocks are not contiguous in memory, this could slow down the program. This code rearrange the data so that the blocks accessed by threads in the same warp are contiguous in memory.
 */
 
 #define AES_KEY_SIZE 16
