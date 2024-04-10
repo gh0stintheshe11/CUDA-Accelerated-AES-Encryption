@@ -2,8 +2,12 @@
 #define UTILS_CUDA_H
 
 #include <cstddef>
+#include <cuda_runtime.h>
 #include <iostream>
 #include <string>
+
+#define AES_KEY_SIZE 16
+#define AES_BLOCK_SIZE 16
 
 extern unsigned char h_sbox[256];
 extern unsigned char h_rcon[11];
@@ -28,5 +32,17 @@ size_t preprocess(const char *filename, size_t chunkSize, unsigned char ***chunk
 std::string getFileExtension(const std::string& filename);
 
 void appendFileExtension(const std::string& filename, const std::string& extension);
+
+void KeyExpansionHost(unsigned char *key, unsigned char *expandedKey);
+
+__device__ void increment_counter(unsigned char *counter, int increment);
+
+__device__ void aes_encrypt_block(unsigned char *input, unsigned char *output,
+                                  unsigned char *expandedKey,
+                                  unsigned char *d_sbox);
+
+__device__ void aes_encrypt_block_v2(unsigned char *input, unsigned char *output,
+                                  unsigned char *expandedKey,
+                                  unsigned char *d_sbox);
 
 #endif // UTILS_CUDA_H
