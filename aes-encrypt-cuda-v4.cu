@@ -19,7 +19,6 @@
         -v4 Loop Unrolling and Intrinsic function
             1. Loop Unrolling: add loop unrolling to small(eliminating loop control overhead)/compute-focused(allow for more instruction-level parallelism) loops not large(increasing the register pressure)/memory-focused(lead to instruction cache misses) loops. mul(), SubBytes(), MixColumns(), AddRoundKey(), aes_encrypt_block(): 9_rounds and state_to_output, aes_ctr_encrypt_kernel(): XOR.
             2. Intrinsic Function: use fast build-in function __ldg() to load and cache iv and expandedkey.
-
 */
 
 #define AES_KEY_SIZE 16
