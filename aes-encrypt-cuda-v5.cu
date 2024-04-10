@@ -11,8 +11,16 @@
         -v1 Constant Memory: S box
         -v1 Shared Memory: IV and expanded key
         -v1 Pinned Memory: plaintext and ciphertext
-        -v2 Coalesced Memory Access: 
+        -v2 Coalesced Memory Access
             In previous code, each thread is accessing a different block of the plaintext and ciphertext arrays. If the blocks are not contiguous in memory, this could slow down the program. This code rearrange the data so that the blocks accessed by threads in the same warp are contiguous in memory.
+        -v3 Divergence Avoidance: 
+            -v3.1 aes_ctr_encrypt_kernel(): In the original function, the divergence is caused by the conditional statement if (blockId < numBlocks). This divergence can be avoided by ensuring that the number of threads is a multiple of the number of blocks, which means padding the data to a multiple of the block size.
+            -v3.2 mul(): In this modified version, the if (b & 1) and if (high_bit) conditions are replaced with arithmetic operations. This ensures all threads in a warp take the same execution path, avoiding divergence.
+        -v4 Loop Unrolling and Intrinsic function
+            1. Loop Unrolling: add loop unrolling to small(eliminating loop control overhead)/compute-focused(allow for more instruction-level parallelism) loops not large(increasing the register pressure)/memory-focused(lead to instruction cache misses) loops. mul(), SubBytes(), MixColumns(), AddRoundKey(), aes_encrypt_block(): 9_rounds and state_to_output, aes_ctr_encrypt_kernel(): XOR.
+            2. Intrinsic Function: use fast build-in function __ldg() to load and cache iv and expandedkey.
+        -v5 Stream
+
 */
 
 #define AES_KEY_SIZE 16
@@ -27,19 +35,15 @@ __device__ unsigned char mul(unsigned char a, unsigned char b) {
     unsigned char high_bit = 0;
     unsigned char modulo = 0x1B; /* x^8 + x^4 + x^3 + x + 1 */
 
+    #pragma unroll
     for (int i = 0; i < 8; i++) {
-        if (b & 1) {
-            p ^= a;
-        }
+        p ^= a * (b & 1);  // Use arithmetic instead of conditional
 
         high_bit = a & high_bit_mask;
         a <<= 1;
-        if (high_bit) {
-            a ^= modulo;
-        }
+        a ^= modulo * (high_bit >> 7);  // Use arithmetic instead of conditional
         b >>= 1;
     }
-
     return p;
 }
 
@@ -81,6 +85,7 @@ void KeyExpansionHost(unsigned char* key, unsigned char* expandedKey) {
 }
 
 __device__ void SubBytes(unsigned char *state) {
+    #pragma unroll
     for (int i = 0; i < 16; ++i) {
         state[i] = d_sbox[state[i]];
     }
@@ -115,35 +120,37 @@ __device__ void ShiftRows(unsigned char *state) {
 
 __device__ void MixColumns(unsigned char *state) {
     unsigned char tmp[16];
-
+    #pragma unroll
     for (int i = 0; i < 4; ++i) {
         tmp[i*4] = (unsigned char)(mul(0x02, state[i*4]) ^ mul(0x03, state[i*4+1]) ^ state[i*4+2] ^ state[i*4+3]);
         tmp[i*4+1] = (unsigned char)(state[i*4] ^ mul(0x02, state[i*4+1]) ^ mul(0x03, state[i*4+2]) ^ state[i*4+3]);
         tmp[i*4+2] = (unsigned char)(state[i*4] ^ state[i*4+1] ^ mul(0x02, state[i*4+2]) ^ mul(0x03, state[i*4+3]));
         tmp[i*4+3] = (unsigned char)(mul(0x03, state[i*4]) ^ state[i*4+1] ^ state[i*4+2] ^ mul(0x02, state[i*4+3]));
     }
-
     memcpy(state, tmp, 16);
 }
 
 __device__ void AddRoundKey(unsigned char *state, const unsigned char *roundKey) {
+    #pragma unroll
     for (int i = 0; i < 16; ++i) {
         state[i] ^= roundKey[i];
     }
 }
 
 __device__ void aes_encrypt_block(unsigned char *input, unsigned char *output, unsigned char *expandedKey) {
-    unsigned char state[16];
+    __shared__ unsigned char state[16];
 
-    // Copy the input to the state array
-    for (int i = 0; i < 16; ++i) {
-        state[i] = input[i];
-    }
+    // Copy the input to the state array (loop unroll)
+    state[0] = input[0]; state[1] = input[1]; state[2] = input[2]; state[3] = input[3];
+    state[4] = input[4]; state[5] = input[5]; state[6] = input[6]; state[7] = input[7];
+    state[8] = input[8]; state[9] = input[9]; state[10] = input[10]; state[11] = input[11];
+    state[12] = input[12]; state[13] = input[13]; state[14] = input[14]; state[15] = input[15];
 
     // Add the round key to the state
     AddRoundKey(state, expandedKey);
 
     // Perform 9 rounds of substitutions, shifts, mixes, and round key additions
+    #pragma unroll
     for (int round = 1; round < 10; ++round) {
         SubBytes(state);
         ShiftRows(state);
@@ -157,6 +164,7 @@ __device__ void aes_encrypt_block(unsigned char *input, unsigned char *output, u
     AddRoundKey(state, expandedKey + 10 * 16);
 
     // Copy the state to the output
+    #pragma unroll
     for (int i = 0; i < 16; ++i) {
         output[i] = state[i];
     }
@@ -164,13 +172,52 @@ __device__ void aes_encrypt_block(unsigned char *input, unsigned char *output, u
 
 __device__ void increment_counter(unsigned char *counter, int increment) {
     int carry = increment;
-    for (int i = AES_BLOCK_SIZE - 1; i >= 0; i--) {
-        int sum = counter[i] + carry;
-        counter[i] = sum & 0xFF;
-        carry = sum >> 8;
-        if (carry == 0) {
-            break;
-        }
+    int sum;
+    sum = counter[15] + carry; counter[15] = sum & 0xFF; carry = sum >> 8;
+    if (carry != 0) {
+        sum = counter[14] + carry; counter[14] = sum & 0xFF; carry = sum >> 8;
+    }
+    if (carry != 0) {
+        sum = counter[13] + carry; counter[13] = sum & 0xFF; carry = sum >> 8;
+    }
+    if (carry != 0) {
+        sum = counter[12] + carry; counter[12] = sum & 0xFF; carry = sum >> 8;
+    }
+    if (carry != 0) {
+        sum = counter[11] + carry; counter[11] = sum & 0xFF; carry = sum >> 8;
+    }
+    if (carry != 0) {
+        sum = counter[10] + carry; counter[10] = sum & 0xFF; carry = sum >> 8;
+    }
+    if (carry != 0) {
+        sum = counter[9] + carry; counter[9] = sum & 0xFF; carry = sum >> 8;
+    }
+    if (carry != 0) {
+        sum = counter[8] + carry; counter[8] = sum & 0xFF; carry = sum >> 8;
+    }
+    if (carry != 0) {
+        sum = counter[7] + carry; counter[7] = sum & 0xFF; carry = sum >> 8;
+    }
+    if (carry != 0) {
+        sum = counter[6] + carry; counter[6] = sum & 0xFF; carry = sum >> 8;
+    }
+    if (carry != 0) {
+        sum = counter[5] + carry; counter[5] = sum & 0xFF; carry = sum >> 8;
+    }
+    if (carry != 0) {
+        sum = counter[4] + carry; counter[4] = sum & 0xFF; carry = sum >> 8;
+    }
+    if (carry != 0) {
+        sum = counter[3] + carry; counter[3] = sum & 0xFF; carry = sum >> 8;
+    }
+    if (carry != 0) {
+        sum = counter[2] + carry; counter[2] = sum & 0xFF; carry = sum >> 8;
+    }
+    if (carry != 0) {
+        sum = counter[1] + carry; counter[1] = sum & 0xFF; carry = sum >> 8;
+    }
+    if (carry != 0) {
+        sum = counter[0] + carry; counter[0] = sum & 0xFF; carry = sum >> 8;
     }
 }
 
@@ -184,10 +231,10 @@ __global__ void aes_ctr_encrypt_kernel(unsigned char *plaintext, unsigned char *
 
     // Copy the IV and expanded key to shared memory
     if (threadIdx.x < AES_BLOCK_SIZE) {
-        shared_iv[threadIdx.x] = iv[threadIdx.x];
+        shared_iv[threadIdx.x] = __ldg(&iv[threadIdx.x]);
     }
     if (threadIdx.x < 176) {
-        shared_expandedKey[threadIdx.x] = expandedKey[threadIdx.x];
+        shared_expandedKey[threadIdx.x] =  __ldg(&expandedKey[threadIdx.x]);
     }
 
     // Synchronize to make sure the arrays are fully loaded
@@ -203,23 +250,22 @@ __global__ void aes_ctr_encrypt_kernel(unsigned char *plaintext, unsigned char *
     for (int block = 0; block < blocksPerThread; ++block) {
         int blockId = tid + block * gridDim.x * blockDim.x;
 
-        if (blockId < numBlocks) {
-            memcpy(counter, shared_iv, AES_BLOCK_SIZE);
+        memcpy(counter, shared_iv, AES_BLOCK_SIZE);
 
-            // Increment the counter by the block ID
-            increment_counter(counter, blockId);
+        // Increment the counter by the block ID
+        increment_counter(counter, blockId);
 
-            // Calculate the block size
-            int blockSize = (blockId == numBlocks - 1 && dataSize % AES_BLOCK_SIZE != 0) ? dataSize % AES_BLOCK_SIZE : AES_BLOCK_SIZE;
+        // Calculate the block size
+        int blockSize = (blockId == numBlocks - 1 && dataSize % AES_BLOCK_SIZE != 0) ? dataSize % AES_BLOCK_SIZE : AES_BLOCK_SIZE;
 
-            // Encrypt the counter to get the ciphertext block
-            unsigned char ciphertextBlock[AES_BLOCK_SIZE];
-            aes_encrypt_block(counter, ciphertextBlock, shared_expandedKey);
+        // Encrypt the counter to get the ciphertext block
+        unsigned char ciphertextBlock[AES_BLOCK_SIZE];
+        aes_encrypt_block(counter, ciphertextBlock, shared_expandedKey);
 
-            // XOR the plaintext with the ciphertext block
-            for (int i = 0; i < blockSize; ++i) {
-                ciphertext[blockId * AES_BLOCK_SIZE + i] = plaintext[blockId * AES_BLOCK_SIZE + i] ^ ciphertextBlock[i];
-            }
+        // XOR the plaintext with the ciphertext block
+        #pragma unroll
+        for (int i = 0; i < blockSize; ++i) {
+            ciphertext[blockId * AES_BLOCK_SIZE + i] = plaintext[blockId * AES_BLOCK_SIZE + i] ^ ciphertextBlock[i];
         }
     }
 }
