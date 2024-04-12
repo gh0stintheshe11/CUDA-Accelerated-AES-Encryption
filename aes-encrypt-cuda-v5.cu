@@ -20,6 +20,7 @@
             1. Loop Unrolling: add loop unrolling to small(eliminating loop control overhead)/compute-focused(allow for more instruction-level parallelism) loops not large(increasing the register pressure)/memory-focused(lead to instruction cache misses) loops. mul(), SubBytes(), MixColumns(), AddRoundKey(), aes_encrypt_block(): 9_rounds and state_to_output, aes_ctr_encrypt_kernel(): XOR.
             2. Intrinsic Function: use fast build-in function __ldg() to load and cache expanded key.
         -v5 Stream
+            added stream for kernel. However due to host side increment variable code excution between kernel lunches, the kernel stream are not really excuting in parallel but in serial. The increment code is used to calculate unique IV for every stream/data chunks, but since it is a host side function, which natruelly excute in serial, the code actually block the next kernel lunch until it is finished.
 */
 
 #define AES_KEY_SIZE 16
