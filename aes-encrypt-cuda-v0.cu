@@ -35,8 +35,10 @@ __device__ unsigned char mul(unsigned char a, unsigned char b) {
     return p;
 }
 
+/*expand the 16 byte key into 44 word expanded key*/
 void KeyExpansionHost(unsigned char* key, unsigned char* expandedKey) {
     int i = 0;
+    //Copy the key into expanded key first 4 word
     while (i < 4) {
         for (int j = 0; j < 4; j++) {
             expandedKey[i * 4 + j] = key[i * 4 + j];
@@ -47,11 +49,14 @@ void KeyExpansionHost(unsigned char* key, unsigned char* expandedKey) {
     int rconIteration = 1;
     unsigned char temp[4];
 
+    //generate next 40 word of expanded key
     while (i < 44) {
+        //get store previous word into temp
         for (int j = 0; j < 4; j++) {
             temp[j] = expandedKey[(i - 1) * 4 + j];
         }
 
+        //if i is multiple of 4 apply g(w[i-1])
         if (i % 4 == 0) {
             unsigned char k = temp[0];
             for (int j = 0; j < 3; j++) {
@@ -65,6 +70,7 @@ void KeyExpansionHost(unsigned char* key, unsigned char* expandedKey) {
             }
         }
 
+        //temp (W[i-1]) XOR with W[i-4]
         for (int j = 0; j < 4; j++) {
             expandedKey[i * 4 + j] = expandedKey[(i - 4) * 4 + j] ^ temp[j];
         }
@@ -133,6 +139,7 @@ __device__ void aes_encrypt_block(unsigned char *input, unsigned char *output, u
     }
 
     // Add the round key to the state
+    //Before the round-based processing, the input is XOR with first 4 word of expanded key
     AddRoundKey(state, expandedKey);
 
     // Perform 9 rounds of substitutions, shifts, mixes, and round key additions
