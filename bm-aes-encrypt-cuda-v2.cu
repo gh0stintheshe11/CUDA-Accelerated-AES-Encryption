@@ -1,4 +1,4 @@
-#include "utils-cuda.h"
+#include "bm-utils-cuda.h"
 #include <chrono>
 #include <cuda_runtime.h>
 #include <iostream>

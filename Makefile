@@ -1,4 +1,4 @@
-objects = bm-aes-encrypt-benchmark.o aes-encrypt-openssl.o aes-cpu.o bm-aes-encrypt-cuda-v0.o bm-aes-encrypt-cuda-v1.o bm-aes-encrypt-cuda-v2.o bm-aes-encrypt-cuda-v3.1.o bm-aes-encrypt-cuda-v3.2.o utils-cuda.o
+objects = bm-aes-encrypt-benchmark.o aes-encrypt-openssl.o aes-cpu.o bm-aes-encrypt-cuda-v0.o bm-aes-encrypt-cuda-v1.o bm-aes-encrypt-cuda-v2.o bm-aes-encrypt-cuda-v3.1.o bm-aes-encrypt-cuda-v3.2.o bm-utils-cuda.o
 all: $(objects)
 	nvcc $(objects) -o aes-encrypt-benchmark -lcrypto -lssl -rdc=true
 
@@ -43,6 +43,9 @@ aes-cpu.o: aes-cpu.cpp
 	nvcc -dc $< -o $@
 
 bm-aes-encrypt-benchmark.o: bm-aes-encrypt-benchmark.cpp
+	nvcc -dc $< -o $@
+
+bm-utils-cuda.o: bm-utils-cuda.cu
 	nvcc -dc $< -o $@
 
 utils-cuda.o: utils-cuda.cu

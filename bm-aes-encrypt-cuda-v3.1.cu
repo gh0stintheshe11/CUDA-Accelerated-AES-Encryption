@@ -4,7 +4,7 @@
 #include <chrono>
 #include <cuda_runtime.h>
 #include <string.h>
-#include "utils-cuda.h"
+#include "bm-utils-cuda.h"
 
 /*
     For benchmarking
