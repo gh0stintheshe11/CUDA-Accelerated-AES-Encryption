@@ -293,7 +293,7 @@ int main(int argc, char* argv[]) {
     std::cout << "time: " << duration.count() << " ms\n";
 
     // After encrypting, append the file extension to the encrypted data
-    appendFileExtension("encrypted.bin", extension);
+    // appendFileExtension("encrypted.bin", extension);
     
     return 0;
 }
