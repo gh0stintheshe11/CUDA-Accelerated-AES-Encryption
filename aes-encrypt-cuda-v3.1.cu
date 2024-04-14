@@ -263,6 +263,21 @@ int main(int argc, char* argv[]) {
     // Calculate the number of AES blocks needed
     size_t numBlocks = (dataSize + AES_BLOCK_SIZE - 1) / AES_BLOCK_SIZE;
 
+    // Calculate the padded data size
+    size_t paddedDataSize = numBlocks * AES_BLOCK_SIZE;
+    unsigned char* paddedPlaintext = (unsigned char*)malloc(paddedDataSize * sizeof(unsigned char));
+    memcpy(paddedPlaintext, plaintext, dataSize * sizeof(unsigned char));
+    
+    // Fill the remaining bytes with 0
+    memset(paddedPlaintext + dataSize, 0, (paddedDataSize - dataSize) * sizeof(unsigned char));
+
+    // Free the original plaintext, as it's no longer needed
+    free(plaintext);
+
+    // Use the padded data instead of the original data
+    plaintext = paddedPlaintext;
+    dataSize = paddedDataSize;
+
     // Define the size of the grid and the blocks
     dim3 threadsPerBlock(256); // Use a reasonable number of threads per block
     dim3 blocksPerGrid((numBlocks + threadsPerBlock.x - 1) / threadsPerBlock.x);
@@ -270,9 +285,9 @@ int main(int argc, char* argv[]) {
     // Allocate device memory
     cudaMalloc((void **)&d_iv, AES_BLOCK_SIZE * sizeof(unsigned char));
     cudaMalloc((void **)&d_expandedKey, 176); 
-    cudaMalloc((void **)&d_plaintext, dataSize * sizeof(unsigned char));
     cudaMalloc((void **)&d_ciphertext, dataSize * sizeof(unsigned char));
-    cudaMallocHost((void**)&ciphertext, dataSize * sizeof(unsigned char));
+    cudaMalloc((void **)&d_plaintext, dataSize * sizeof(unsigned char));
+    ciphertext = (unsigned char*)malloc(dataSize * sizeof(unsigned char));
 
     // Copy S-box to device constant memory
     cudaMemcpyToSymbol(d_sbox, h_sbox, sizeof(h_sbox));
@@ -299,8 +314,8 @@ int main(int argc, char* argv[]) {
     cudaFree(d_ciphertext);
     cudaFree(d_iv);
     cudaFree(d_expandedKey);
-    cudaFreeHost(ciphertext);
-    cudaFreeHost(plaintext);
+    free(ciphertext);
+    free(plaintext);
 
     // Get the stop time
     auto stop = std::chrono::high_resolution_clock::now();
